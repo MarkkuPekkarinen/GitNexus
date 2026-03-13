@@ -240,8 +240,6 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
-const SKILL_NAMES = ['gitnexus-exploring', 'gitnexus-debugging', 'gitnexus-impact-analysis', 'gitnexus-refactoring', 'gitnexus-guide', 'gitnexus-cli'];
-
 /**
  * Install GitNexus skills to a target directory.
  * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
@@ -255,7 +253,21 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
   const installed: string[] = [];
   const skillsRoot = path.join(__dirname, '..', '..', 'skills');
 
-  for (const skillName of SKILL_NAMES) {
+  let skillNames: string[] = [];
+  try {
+    const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith('.md')) {
+        skillNames.push(entry.name.replace(/\.md$/, ''));
+      } else if (entry.isDirectory()) {
+        skillNames.push(entry.name);
+      }
+    }
+  } catch {
+    return [];
+  }
+
+  for (const skillName of skillNames) {
     const skillDir = path.join(targetDir, skillName);
 
     try {
