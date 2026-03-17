@@ -72,17 +72,29 @@ describe('extractElementTypeFromString', () => {
     });
   });
 
-  describe('multi-argument generics — returns first arg only', () => {
-    it('Map<String, User> → String', () => {
-      expect(extractElementTypeFromString('Map<String, User>')).toBe('String');
+  describe('multi-argument generics — default returns last (value) arg', () => {
+    it('Map<String, User> → User (default: last/value arg)', () => {
+      expect(extractElementTypeFromString('Map<String, User>')).toBe('User');
     });
 
-    it('Map<String, List<User>> → String (nested second arg ignored)', () => {
-      expect(extractElementTypeFromString('Map<String, List<User>>')).toBe('String');
+    it('Map<String, User> → String (pos=first: key arg)', () => {
+      expect(extractElementTypeFromString('Map<String, User>', 'first')).toBe('String');
     });
 
-    it('Dict[str, User] → str (Python)', () => {
-      expect(extractElementTypeFromString('Dict[str, User]')).toBe('str');
+    it('Map<String, List<User>> → undefined (last arg is nested generic)', () => {
+      expect(extractElementTypeFromString('Map<String, List<User>>')).toBeUndefined();
+    });
+
+    it('Map<String, List<User>> → String (pos=first: key arg)', () => {
+      expect(extractElementTypeFromString('Map<String, List<User>>', 'first')).toBe('String');
+    });
+
+    it('Dict[str, User] → User (default: last/value arg, Python)', () => {
+      expect(extractElementTypeFromString('Dict[str, User]')).toBe('User');
+    });
+
+    it('Dict[str, User] → str (pos=first: key arg, Python)', () => {
+      expect(extractElementTypeFromString('Dict[str, User]', 'first')).toBe('str');
     });
   });
 
@@ -98,12 +110,20 @@ describe('extractElementTypeFromString', () => {
   });
 
   describe('cross-bracket nesting (bracket depth fix)', () => {
-    it('Dict[str, List[int]] → str (square-bracket outer, nested inner)', () => {
-      expect(extractElementTypeFromString('Dict[str, List[int]]')).toBe('str');
+    it('Dict[str, List[int]] → undefined (default: last arg is nested generic)', () => {
+      expect(extractElementTypeFromString('Dict[str, List[int]]')).toBeUndefined();
     });
 
-    it('Map<String, List<User>> → String (nested angle brackets)', () => {
-      expect(extractElementTypeFromString('Map<String, List<User>>')).toBe('String');
+    it('Dict[str, List[int]] → str (pos=first: key arg)', () => {
+      expect(extractElementTypeFromString('Dict[str, List[int]]', 'first')).toBe('str');
+    });
+
+    it('Map<String, List<User>> → undefined (default: last arg is nested generic)', () => {
+      expect(extractElementTypeFromString('Map<String, List<User>>')).toBeUndefined();
+    });
+
+    it('Map<String, List<User>> → String (pos=first: key arg)', () => {
+      expect(extractElementTypeFromString('Map<String, List<User>>', 'first')).toBe('String');
     });
 
     it('mismatched close bracket at depth 0 → undefined', () => {
