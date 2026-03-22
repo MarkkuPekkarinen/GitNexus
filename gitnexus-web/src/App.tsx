@@ -157,11 +157,14 @@ const AppContent = () => {
     }
     setFileContents(fileMap);
 
-    await hydrateServerGraph(result);
+    try {
+      await hydrateServerGraph(result);
 
-    // Transition directly to exploring view
-    setViewMode('exploring');
-    setProgress(null);
+      // Transition directly to exploring view
+      setViewMode('exploring');
+    } finally {
+      setProgress(null);
+    }
 
     // Hydrate the worker-side DB (LadybugDB + BM25) so Query/Processes/embeddings work
     hydrateWorkerFromServer(result.nodes, result.relationships, result.fileContents).then(() => {
@@ -260,7 +263,7 @@ const AppContent = () => {
         onFileSelect={handleFileSelect}
         onGitClone={handleGitClone}
         onServerConnect={async (result, serverUrl) => {
-          handleServerConnect(result);
+          await handleServerConnect(result);
           if (serverUrl) {
             const baseUrl = normalizeServerUrl(serverUrl);
             setServerBaseUrl(baseUrl);
