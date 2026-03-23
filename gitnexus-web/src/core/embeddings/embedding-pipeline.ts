@@ -124,7 +124,7 @@ const createVectorIndex = async (
   `;
 
   try {
-    await executeQuery(cypher, false); // readOnly=false: CALL CREATE_VECTOR_INDEX is a write operation
+    await executeQuery(cypher);
   } catch (error) {
     // Index might already exist
     if (import.meta.env.DEV) {
