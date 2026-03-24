@@ -1,6 +1,7 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
+import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
 import { processParsing } from './parsing-processor.js';
 import {
   processImports,
@@ -469,6 +470,23 @@ async function runScanAndStructure(
     const mdResult = processMarkdown(graph, mdFiles, allPathSet);
     if (isDev) {
       console.log(`  Markdown: ${mdResult.sections} sections, ${mdResult.links} cross-links from ${mdFiles.length} files`);
+    }
+  }
+
+  // ── Phase 2.6: COBOL processing (regex extraction, no tree-sitter) ──
+  const cobolScanned = scannedFiles.filter(f => isCobolFile(f.path) || isJclFile(f.path));
+  if (cobolScanned.length > 0) {
+    const cobolContents = await readFileContents(repoPath, cobolScanned.map(f => f.path));
+    const cobolFiles = cobolScanned
+      .filter(f => cobolContents.has(f.path))
+      .map(f => ({ path: f.path, content: cobolContents.get(f.path)! }));
+    const allPathSet = new Set(allPaths);
+    const cobolResult = processCobol(graph, cobolFiles, allPathSet);
+    if (isDev) {
+      console.log(`  COBOL: ${cobolResult.programs} programs, ${cobolResult.paragraphs} paragraphs, ${cobolResult.sections} sections from ${cobolFiles.length} files`);
+      if (cobolResult.jclJobs > 0) {
+        console.log(`  JCL: ${cobolResult.jclJobs} jobs, ${cobolResult.jclSteps} steps`);
+      }
     }
   }
 
