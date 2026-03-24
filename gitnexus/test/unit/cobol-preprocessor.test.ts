@@ -40,15 +40,15 @@ describe('preprocessCobolSource', () => {
     expect(lines[1].substring(0, 6)).toBe('      ');
   });
 
-  it('preserves standard numeric sequence numbers', () => {
+  it('strips numeric sequence numbers from cols 1-6', () => {
     const input = cobol(
       '000100 IDENTIFICATION DIVISION.',
       '000200 PROGRAM-ID. TEST1.',
     );
     const output = preprocessCobolSource(input);
     const lines = output.split('\n');
-    expect(lines[0]).toBe('000100 IDENTIFICATION DIVISION.');
-    expect(lines[1]).toBe('000200 PROGRAM-ID. TEST1.');
+    expect(lines[0]).toBe('       IDENTIFICATION DIVISION.');
+    expect(lines[1]).toBe('       PROGRAM-ID. TEST1.');
   });
 
   it('preserves lines shorter than 7 characters', () => {
@@ -191,6 +191,21 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(r.calls[1].target).toBe('ANOTHER');
     });
 
+    it("extracts CALL 'PROGRAM' statements (single-quoted target)", () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        "           CALL 'SUBPROG'.",
+        "           CALL 'ANOTHER'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.calls).toHaveLength(2);
+      expect(r.calls[0].target).toBe('SUBPROG');
+      expect(r.calls[1].target).toBe('ANOTHER');
+    });
+
     it('extracts PERFORM paragraph-name with caller context', () => {
       const src = cobol(
         '      IDENTIFICATION DIVISION.',
@@ -245,6 +260,55 @@ describe('extractCobolSymbolsWithRegex', () => {
       const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
       expect(r.copies).toHaveLength(1);
       expect(r.copies[0].target).toBe('MY-COPY');
+    });
+
+    it("extracts COPY 'copybook' (single-quoted)", () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      DATA DIVISION.',
+        '      WORKING-STORAGE SECTION.',
+        "           COPY 'MY-COPY'.",
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.copies).toHaveLength(1);
+      expect(r.copies[0].target).toBe('MY-COPY');
+    });
+
+    it('does NOT store PERFORM UNTIL as a perform target', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           PERFORM UNTIL WS-EOF = 1.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.performs.map(p => p.target)).not.toContain('UNTIL');
+    });
+
+    it('does NOT store PERFORM VARYING as a perform target', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           PERFORM VARYING I FROM 1 BY 1 UNTIL I > 10.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.performs.map(p => p.target)).not.toContain('VARYING');
+    });
+
+    it('does NOT store PERFORM WITH TEST as a perform target', () => {
+      const src = cobol(
+        '      IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. TESTPROG.',
+        '      PROCEDURE DIVISION.',
+        '       MAIN-PARA.',
+        '           PERFORM WITH TEST AFTER UNTIL WS-DONE.',
+      );
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.performs.map(p => p.target)).not.toContain('WITH');
     });
   });
 
@@ -382,6 +446,43 @@ describe('extractCobolSymbolsWithRegex', () => {
       expect(fd.organization).toBe('INDEXED');
       expect(fd.access).toBe('DYNAMIC');
       expect(fd.recordKey).toBe('EMP-ID');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Sequence Numbers (fixed-format COBOL with 000100 cols 1-6)
+  // -------------------------------------------------------------------------
+  describe('Sequence Numbers', () => {
+    it('extracts paragraphs from fixed-format COBOL with numeric sequence numbers', () => {
+      // preprocessCobolSource strips cols 1-6, so the extractor sees clean lines
+      const src = preprocessCobolSource(cobol(
+        '000010 IDENTIFICATION DIVISION.',
+        '000020 PROGRAM-ID. SEQPROG.',
+        '000030 PROCEDURE DIVISION.',
+        '000040 MAIN-PARA.',
+        '000050     PERFORM SUB-PARA.',
+        '000060 SUB-PARA.',
+        '000070     DISPLAY "HI".',
+      ));
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.programName).toBe('SEQPROG');
+      expect(r.paragraphs.map(p => p.name)).toEqual(['MAIN-PARA', 'SUB-PARA']);
+      expect(r.performs).toHaveLength(1);
+      expect(r.performs[0].target).toBe('SUB-PARA');
+    });
+
+    it('extracts data items from fixed-format COBOL with numeric sequence numbers', () => {
+      const src = preprocessCobolSource(cobol(
+        '000010 IDENTIFICATION DIVISION.',
+        '000020 PROGRAM-ID. SEQPROG.',
+        '000030 DATA DIVISION.',
+        '000040 WORKING-STORAGE SECTION.',
+        '000050 01  WS-AMOUNT              PIC 9(7)V99.',
+        '000060 01  WS-NAME                PIC X(30).',
+      ));
+      const r = extractCobolSymbolsWithRegex(src, 'test.cbl');
+      expect(r.dataItems.map(d => d.name)).toContain('WS-AMOUNT');
+      expect(r.dataItems.map(d => d.name)).toContain('WS-NAME');
     });
   });
 

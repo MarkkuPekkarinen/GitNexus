@@ -255,11 +255,11 @@ function parseSingleCopyStatement(
   // Strip terminating period
   const text = stmt.replace(/\.\s*$/, '').trim();
 
-  // Extract target: COPY <target> or COPY "<target>"
-  const targetMatch = text.match(/^COPY\s+(?:"([^"]+)"|([A-Z][A-Z0-9-]*))/i);
+  // Extract target: COPY <target> or COPY "<target>" or COPY '<target>'
+  const targetMatch = text.match(/^COPY\s+(?:"([^"]+)"|'([^']+)'|([A-Z][A-Z0-9-]*))/i);
   if (!targetMatch) return null;
 
-  const target = targetMatch[1] || targetMatch[2];
+  const target = targetMatch[1] || targetMatch[2] || targetMatch[3];
 
   // Extract REPLACING clause if present
   let replacing: CopyReplacing[] = [];

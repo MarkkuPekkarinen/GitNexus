@@ -106,9 +106,18 @@ export interface CobolRegexResults {
 // ---------------------------------------------------------------------------
 
 /**
- * Clean COBOL source before tree-sitter parsing.
- * Replaces non-standard patch markers in columns 1-6 with spaces.
- * Preserves exact line count for AST position mapping.
+ * Normalize COBOL source for regex-based extraction.
+ *
+ * The COBOL fixed-format sequence number area (columns 1-6) is semantically
+ * irrelevant to parsing — compilers and tools always ignore it.  This
+ * function replaces ANY non-space content in columns 1-6 with spaces so that
+ * position-sensitive regexes (paragraph/section detection, data-item anchors,
+ * etc.) work identically whether the file carries:
+ *   • numeric sequence numbers  (000100 … 999999)
+ *   • alphabetic patch markers  (mzADD, estero, #patch, …)
+ *   • the COBOL default of all spaces
+ *
+ * Preserves exact line count for position mapping.
  */
 export function preprocessCobolSource(content: string): string {
   const lines = content.split('\n');
@@ -116,9 +125,10 @@ export function preprocessCobolSource(content: string): string {
     const line = lines[i];
     if (line.length < 7) continue;
     const seq = line.substring(0, 6);
-    // Standard COBOL: cols 1-6 are spaces or digits (sequence numbers)
-    // Patch markers contain letters or '#' — replace with spaces
-    if (/[a-zA-Z#]/.test(seq)) {
+    // Replace any non-space character in the sequence area with spaces.
+    // This covers numeric sequence numbers (000100), alphabetic patch markers
+    // (mzADD, estero), '#'-prefixed markers, and mixed sequences.
+    if (/\S/.test(seq)) {
       lines[i] = '      ' + line.substring(6);
     }
   }
@@ -173,9 +183,11 @@ const RE_PROC_PARAGRAPH = /^       ([A-Z][A-Z0-9-]+)\.\s*$/;
 const RE_PERFORM = /\bPERFORM\s+([A-Z][A-Z0-9-]+)(?:\s+THRU\s+([A-Z][A-Z0-9-]+))?/i;
 
 // ALL DIVISIONS
-const RE_CALL = /\bCALL\s+"([^"]+)"/i;
+// Both double-quoted ("PROG") and single-quoted ('PROG') targets are valid COBOL.
+// Use separate alternation groups so quotes must match (prevents "PROG' false-matches).
+const RE_CALL = /\bCALL\s+(?:"([^"]+)"|'([^']+)')/i;
 const RE_COPY_UNQUOTED = /\bCOPY\s+([A-Z][A-Z0-9-]+)(?:\s|\.)/i;
-const RE_COPY_QUOTED = /\bCOPY\s+"([^"]+)"(?:\s|\.)/i;
+const RE_COPY_QUOTED = /\bCOPY\s+(?:"([^"]+)"|'([^']+)')(?:\s|\.)/i;
 
 // EXEC blocks
 const RE_EXEC_SQL_START = /\bEXEC\s+SQL\b/i;
@@ -193,6 +205,13 @@ const RE_MOVE = /\bMOVE\s+(CORRESPONDING\s+)?([A-Z][A-Z0-9-]+)\s+TO\s+([A-Z][A-Z
 const MOVE_SKIP = new Set([
   'SPACES', 'ZEROS', 'ZEROES', 'LOW-VALUES', 'LOW-VALUE',
   'HIGH-VALUES', 'HIGH-VALUE', 'QUOTES', 'QUOTE', 'ALL',
+]);
+
+// PERFORM: keywords that may follow PERFORM but are NOT paragraph/section names.
+// Inline PERFORM loops (UNTIL, VARYING) and inline test clauses (WITH TEST,
+// FOREVER) must not be stored as perform-target false positives.
+const PERFORM_KEYWORD_SKIP = new Set([
+  'UNTIL', 'VARYING', 'WITH', 'TEST', 'FOREVER',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -648,7 +667,7 @@ export function extractCobolSymbolsWithRegex(
     // --- COPY (all divisions) ---
     const copyQMatch = line.match(RE_COPY_QUOTED);
     if (copyQMatch) {
-      result.copies.push({ target: copyQMatch[1], line: lineNum });
+      result.copies.push({ target: copyQMatch[1] ?? copyQMatch[2], line: lineNum });
     } else {
       const copyUMatch = line.match(RE_COPY_UNQUOTED);
       if (copyUMatch) {
@@ -659,7 +678,7 @@ export function extractCobolSymbolsWithRegex(
     // --- CALL (all divisions, typically procedure) ---
     const callMatch = line.match(RE_CALL);
     if (callMatch) {
-      result.calls.push({ target: callMatch[1], line: lineNum });
+      result.calls.push({ target: callMatch[1] ?? callMatch[2], line: lineNum });
     }
 
     // --- Division-specific extraction ---
@@ -852,12 +871,16 @@ export function extractCobolSymbolsWithRegex(
     // PERFORM
     const perfMatch = line.match(RE_PERFORM);
     if (perfMatch) {
-      result.performs.push({
-        caller: currentParagraph,
-        target: perfMatch[1],
-        thruTarget: perfMatch[2] || undefined,
-        line: lineNum,
-      });
+      const target = perfMatch[1];
+      // Skip COBOL inline-perform keywords that are not paragraph names
+      if (!PERFORM_KEYWORD_SKIP.has(target.toUpperCase())) {
+        result.performs.push({
+          caller: currentParagraph,
+          target,
+          thruTarget: perfMatch[2] || undefined,
+          line: lineNum,
+        });
+      }
     }
 
     // ENTRY point
