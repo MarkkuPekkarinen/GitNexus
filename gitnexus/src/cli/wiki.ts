@@ -500,7 +500,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
         console.log('  Save and close the editor when done.\n');
 
         try {
-          execSync(`${editor} "${treeFile}"`, { stdio: 'inherit' });
+          execFileSync(editor, [treeFile], { stdio: 'inherit' });
         } catch {
           console.log(`  Could not open editor. Please edit manually:\n  ${treeFile}\n`);
           console.log('  Then run `gitnexus wiki` to continue.\n');
