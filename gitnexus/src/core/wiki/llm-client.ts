@@ -58,7 +58,7 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       || 'minimax/minimax-m2.5',
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
-    provider: overrides?.provider ?? savedConfig.provider,
+    provider: overrides?.provider ?? savedConfig.provider ?? 'openai',
     apiVersion: overrides?.apiVersion
       || process.env.GITNEXUS_AZURE_API_VERSION
       || savedConfig.apiVersion,
