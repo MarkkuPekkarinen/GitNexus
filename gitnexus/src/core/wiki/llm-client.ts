@@ -106,7 +106,7 @@ export function isReasoningModel(model: string, override?: boolean): boolean {
  */
 export function buildRequestUrl(baseUrl: string, apiVersion: string | undefined): string {
   const base = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
-  return apiVersion ? `${base}?api-version=${apiVersion}` : base;
+  return apiVersion ? `${base}?api-version=${encodeURIComponent(apiVersion)}` : base;
 }
 
 export interface CallLLMOptions {

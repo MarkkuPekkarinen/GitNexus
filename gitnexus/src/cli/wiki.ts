@@ -279,10 +279,7 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
         const reasoningAnswer = await prompt(
           '  Is this a reasoning model (o1, o3, o4-mini)? (y/N): ',
         );
-        const isReasoningModelDeployment =
-          reasoningAnswer.toLowerCase() === 'y' || reasoningAnswer.toLowerCase() === 'yes'
-            ? true
-            : false;
+        const isReasoningModelDeployment = ['y', 'yes'].includes(reasoningAnswer.toLowerCase());
 
         if (isReasoningModelDeployment) {
           console.log(
