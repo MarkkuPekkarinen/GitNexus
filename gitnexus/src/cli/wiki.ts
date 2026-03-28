@@ -209,14 +209,14 @@ export const wikiCommand = async (
         console.log('\n  Azure OpenAI setup.');
         console.log('  You need: your resource name, deployment name, and API key from the Azure portal.\n');
 
-        const resourceName = await prompt('  Azure resource name (e.g. my-openai-resource): ');
+        const resourceName = (await prompt('  Azure resource name (e.g. my-openai-resource): ')).trim();
         if (!resourceName) {
           console.log('\n  No resource name provided. Aborting.\n');
           process.exitCode = 1;
           return;
         }
 
-        const deploymentName = await prompt('  Deployment name (the name you gave your model deployment): ');
+        const deploymentName = (await prompt('  Deployment name (the name you gave your model deployment): ')).trim();
         if (!deploymentName) {
           console.log('\n  No deployment name provided. Aborting.\n');
           process.exitCode = 1;
@@ -244,10 +244,10 @@ export const wikiCommand = async (
 
         // Ask if this is a reasoning model deployment
         const reasoningAnswer = await prompt('  Is this a reasoning model (o1, o3, o4-mini)? (y/N): ');
-        const isReasoningModelDeployment = (reasoningAnswer.toLowerCase() === 'y' || reasoningAnswer.toLowerCase() === 'yes') ? true : undefined;
+        const isReasoningModelDeployment = (reasoningAnswer.toLowerCase() === 'y' || reasoningAnswer.toLowerCase() === 'yes') ? true : false;
 
         if (isReasoningModelDeployment) {
-          console.log('  Note: temperature and max_tokens will be omitted for this deployment.\n');
+          console.log('  Note: temperature and max_tokens will be omitted for this deployment (Azure reasoning model requirement).\n');
         }
 
         const modelInput = await prompt(`  Model / deployment name (default: ${defaultModel}): `);
@@ -277,9 +277,9 @@ export const wikiCommand = async (
         // Save Azure config including optional apiVersion and isReasoningModel
         const azureConfig: Parameters<typeof saveCLIConfig>[0] = {
           apiKey: azureKey, baseUrl: azureBaseUrl, model, provider: 'azure',
+          isReasoningModel: isReasoningModelDeployment,
         };
         if (azureApiVersion) azureConfig.apiVersion = azureApiVersion;
-        if (isReasoningModelDeployment !== undefined) azureConfig.isReasoningModel = isReasoningModelDeployment;
         await saveCLIConfig(azureConfig);
         console.log('  Config saved to ~/.gitnexus/config.json\n');
 
