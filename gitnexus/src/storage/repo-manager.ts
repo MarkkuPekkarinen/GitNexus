@@ -320,8 +320,6 @@ export const listRegisteredRepos = async (opts?: {
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 
-export type LLMProvider = 'openai' | 'cursor';
-
 export interface CLIConfig {
   apiKey?: string;
   model?: string;
