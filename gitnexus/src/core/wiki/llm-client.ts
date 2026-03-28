@@ -268,9 +268,10 @@ async function readSSEStream(
         const parsed = JSON.parse(data);
         const choice = parsed.choices?.[0];
 
-        // Detect Azure content filter finish reason
+        // Detect content filter finish reason — skip delta from this chunk
         if (choice?.finish_reason === 'content_filter') {
           contentFilterTriggered = true;
+          continue;
         }
 
         const delta = choice?.delta?.content;
@@ -285,7 +286,7 @@ async function readSSEStream(
   }
 
   if (contentFilterTriggered) {
-    throw new Error('Azure content filter blocked the response mid-stream. The generated content triggered content policy. Adjust your prompt and retry.');
+    throw new Error('content filter triggered mid-stream. The generated content was blocked by content policy. Adjust your prompt and retry.');
   }
 
   if (!content) {
