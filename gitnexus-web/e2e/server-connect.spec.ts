@@ -62,8 +62,11 @@ async function waitForGraphLoaded(page: import('@playwright/test').Page, testInf
   await page.goto('/');
 
   const landingCard = page.locator('[data-testid="landing-repo-card"]').first();
-  if (await landingCard.isVisible({ timeout: 10_000 }).catch(() => false)) {
+  try {
+    await landingCard.waitFor({ state: 'visible', timeout: 15_000 });
     await landingCard.click();
+  } catch {
+    // Landing screen may not appear (e.g. ?server auto-connect)
   }
 
   await expect(page.locator('[data-testid="status-ready"]')).toBeVisible({ timeout: 30_000 });
