@@ -96,7 +96,7 @@ export const VALID_RELATION_TYPES = new Set([
   'IMPLEMENTS',
   'HAS_METHOD',
   'HAS_PROPERTY',
-  'OVERRIDES',
+  'METHOD_OVERRIDES',
   'ACCESSES',
   'HANDLES_ROUTE',
   'FETCHES',
@@ -117,7 +117,7 @@ export const VALID_RELATION_TYPES = new Set([
  *   CALLS / IMPORTS  – direct, strongly-typed references → 0.9
  *   EXTENDS          – class hierarchy, statically verifiable → 0.85
  *   IMPLEMENTS       – interface contract, statically verifiable → 0.85
- *   OVERRIDES        – method override, statically verifiable → 0.85
+ *   METHOD_OVERRIDES        – method override, statically verifiable → 0.85
  *   HAS_METHOD       – structural containment → 0.95
  *   HAS_PROPERTY     – structural containment → 0.95
  *   ACCESSES         – field read/write, may be indirect → 0.8
@@ -129,7 +129,7 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
   IMPORTS: 0.9,
   EXTENDS: 0.85,
   IMPLEMENTS: 0.85,
-  OVERRIDES: 0.85,
+  METHOD_OVERRIDES: 0.85,
   HAS_METHOD: 0.95,
   HAS_PROPERTY: 0.95,
   ACCESSES: 0.8,
@@ -174,6 +174,7 @@ export class LocalBackend {
   private repos: Map<string, RepoHandle> = new Map();
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
+  private migratedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
   private lastStalenessCheck: Map<string, number> = new Map();
   private groupToolSvc: GroupService | null = null;
@@ -406,6 +407,20 @@ export class LocalBackend {
     try {
       await initLbug(repoId, handle.lbugPath);
       this.initializedRepos.add(repoId);
+      // Migrate legacy OVERRIDES → METHOD_OVERRIDES (once per session per repo)
+      // TODO: remove this migration after a few releases once most users have migrated indexes
+      if (!this.migratedRepos.has(repoId)) {
+        this.migratedRepos.add(repoId);
+        try {
+          await executeParameterized(
+            repoId,
+            `MATCH ()-[r:CodeRelation {type: 'OVERRIDES'}]->() SET r.type = 'METHOD_OVERRIDES'`,
+            {},
+          );
+        } catch {
+          /* Old index may not have OVERRIDES edges — ignore */
+        }
+      }
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(repoId);
@@ -1200,7 +1215,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `,
@@ -1290,7 +1305,7 @@ export class LocalBackend {
       repo.id,
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'OVERRIDES', 'ACCESSES']
+      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'ACCESSES']
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `,

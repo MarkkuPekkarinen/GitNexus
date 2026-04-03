@@ -144,7 +144,7 @@ withTestLbugDB(
         const result = await backend.callTool('impact', {
           target: 'authenticate',
           direction: 'downstream',
-          relationTypes: ['OVERRIDES'],
+          relationTypes: ['METHOD_OVERRIDES'],
         });
         expect(result).not.toHaveProperty('error');
         // AuthService.authenticate overrides BaseService.authenticate

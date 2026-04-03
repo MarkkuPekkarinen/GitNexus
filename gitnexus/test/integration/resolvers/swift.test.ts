@@ -799,4 +799,12 @@ describe.skipIf(!swiftAvailable)('Swift abstract dispatch', () => {
     expect(sqlFind).toBeDefined();
     expect(sqlFind!.properties.returnType).toBe('String');
   });
+
+  it('emits METHOD_IMPLEMENTS edges from SqlRepository methods → Repository protocol methods', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edges = mi.filter((e) => e.sourceFilePath.includes('Repository.swift'));
+    expect(edges.length).toBe(2);
+    const names = edges.map((e) => e.source).sort();
+    expect(names).toEqual(['find', 'save']);
+  });
 });

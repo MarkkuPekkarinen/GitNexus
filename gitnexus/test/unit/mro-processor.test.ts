@@ -28,13 +28,18 @@ function addMethod(
   className: string,
   methodName: string,
   classLabel: 'Class' | 'Interface' | 'Struct' | 'Trait' = 'Class',
+  parameterTypes?: string[],
 ) {
   const classId = generateId(classLabel, className);
   const methodId = generateId('Method', `${className}.${methodName}`);
   graph.addNode({
     id: methodId,
     label: 'Method',
-    properties: { name: methodName, filePath: `src/${className}.ts` },
+    properties: {
+      name: methodName,
+      filePath: `src/${className}.ts`,
+      ...(parameterTypes ? { parameterTypes } : {}),
+    },
   });
   graph.addRelationship({
     id: generateId('HAS_METHOD', `${classId}->${methodId}`),
@@ -128,7 +133,7 @@ describe('computeMRO', () => {
 
       // OVERRIDES edge emitted
       expect(result.overrideEdges).toBeGreaterThanOrEqual(1);
-      const overrides = graph.relationships.filter((r) => r.type === 'OVERRIDES');
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
       expect(overrides.some((r) => r.sourceId === dId && r.targetId === bFoo)).toBe(true);
     });
 
@@ -296,7 +301,7 @@ describe('computeMRO', () => {
 
       // No OVERRIDES edge emitted for Rust ambiguity
       const overrides = graph.relationships.filter(
-        (r) => r.type === 'OVERRIDES' && r.sourceId === generateId('Struct', 'MyStruct'),
+        (r) => r.type === 'METHOD_OVERRIDES' && r.sourceId === generateId('Struct', 'MyStruct'),
       );
       expect(overrides).toHaveLength(0);
     });
@@ -347,7 +352,7 @@ describe('computeMRO', () => {
       const result = computeMRO(graph);
 
       // No OVERRIDES edge should be emitted for properties
-      const overrides = graph.relationships.filter((r) => r.type === 'OVERRIDES');
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
       expect(overrides).toHaveLength(0);
       expect(result.overrideEdges).toBe(0);
     });
@@ -399,7 +404,7 @@ describe('computeMRO', () => {
       const result = computeMRO(graph);
 
       // Only 1 OVERRIDES edge (for the method, not the property)
-      const overrides = graph.relationships.filter((r) => r.type === 'OVERRIDES');
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
       expect(overrides).toHaveLength(1);
       expect(overrides[0].targetId).toBe(methodA); // leftmost base wins for C++
       expect(result.overrideEdges).toBe(1);
@@ -509,6 +514,224 @@ describe('computeMRO', () => {
 
       const result = computeMRO(graph);
       expect(result).toBeDefined();
+    });
+  });
+
+  // ---- METHOD_IMPLEMENTS edges -----------------------------------------------
+  describe('METHOD_IMPLEMENTS edges', () => {
+    it('emits METHOD_IMPLEMENTS for class implementing interface method', () => {
+      // IAnimal { speak() } <-- Dog { speak() }
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IAnimal', 'java', 'Interface');
+      addClass(graph, 'Dog', 'java');
+      addImplements(graph, 'Dog', 'IAnimal');
+      const ifaceMethod = addMethod(graph, 'IAnimal', 'speak', 'Interface');
+      const classMethod = addMethod(graph, 'Dog', 'speak');
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(1);
+
+      // Verify the edge exists: ConcreteMethod → InterfaceMethod
+      const edges: any[] = [];
+      graph.forEachRelationship((rel) => {
+        if (rel.type === 'METHOD_IMPLEMENTS') edges.push(rel);
+      });
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(classMethod);
+      expect(edges[0].targetId).toBe(ifaceMethod);
+      expect(edges[0].confidence).toBe(1.0);
+    });
+
+    it('emits METHOD_IMPLEMENTS for Rust struct implementing trait', () => {
+      // Drawable { draw() } <-- Circle { draw() }
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'Drawable', 'rust', 'Trait');
+      addClass(graph, 'Circle', 'rust', 'Struct');
+      addImplements(graph, 'Circle', 'Drawable', 'Struct', 'Trait');
+      const traitMethod = addMethod(graph, 'Drawable', 'draw', 'Trait');
+      const structMethod = addMethod(graph, 'Circle', 'draw', 'Struct');
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(1);
+
+      const edges: any[] = [];
+      graph.forEachRelationship((rel) => {
+        if (rel.type === 'METHOD_IMPLEMENTS') edges.push(rel);
+      });
+      expect(edges[0].sourceId).toBe(structMethod);
+      expect(edges[0].targetId).toBe(traitMethod);
+    });
+
+    it('matches overloaded interface methods by parameterTypes', () => {
+      // IRepo { find(String), find(String, int) } <-- SqlRepo { find(String), find(String, int) }
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IRepo', 'java', 'Interface');
+      addClass(graph, 'SqlRepo', 'java');
+      addImplements(graph, 'SqlRepo', 'IRepo');
+
+      // Use manual IDs to avoid overloaded-name collision (same name, different types)
+      const ifaceFind1 = generateId('Method', 'IRepo.find.1');
+      graph.addNode({
+        id: ifaceFind1,
+        label: 'Method',
+        properties: { name: 'find', filePath: 'src/IRepo.ts', parameterTypes: ['String'] },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Interface', 'IRepo')}->${ifaceFind1}`),
+        sourceId: generateId('Interface', 'IRepo'),
+        targetId: ifaceFind1,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      const ifaceFind2 = generateId('Method', 'IRepo.find.2');
+      graph.addNode({
+        id: ifaceFind2,
+        label: 'Method',
+        properties: { name: 'find', filePath: 'src/IRepo.ts', parameterTypes: ['String', 'int'] },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Interface', 'IRepo')}->${ifaceFind2}`),
+        sourceId: generateId('Interface', 'IRepo'),
+        targetId: ifaceFind2,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      const sqlFind1Id = generateId('Method', 'SqlRepo.find.1');
+      graph.addNode({
+        id: sqlFind1Id,
+        label: 'Method',
+        properties: { name: 'find', filePath: 'src/SqlRepo.ts', parameterTypes: ['String'] },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Class', 'SqlRepo')}->${sqlFind1Id}`),
+        sourceId: generateId('Class', 'SqlRepo'),
+        targetId: sqlFind1Id,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      const sqlFind2Id = generateId('Method', 'SqlRepo.find.2');
+      graph.addNode({
+        id: sqlFind2Id,
+        label: 'Method',
+        properties: { name: 'find', filePath: 'src/SqlRepo.ts', parameterTypes: ['String', 'int'] },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Class', 'SqlRepo')}->${sqlFind2Id}`),
+        sourceId: generateId('Class', 'SqlRepo'),
+        targetId: sqlFind2Id,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(2);
+
+      const edges: any[] = [];
+      graph.forEachRelationship((rel) => {
+        if (rel.type === 'METHOD_IMPLEMENTS') edges.push(rel);
+      });
+      expect(edges).toHaveLength(2);
+      // find(String) → find(String) and find(String, int) → find(String, int)
+      const edge1 = edges.find((e) => e.targetId === ifaceFind1);
+      const edge2 = edges.find((e) => e.targetId === ifaceFind2);
+      expect(edge1).toBeDefined();
+      expect(edge1!.sourceId).toBe(sqlFind1Id);
+      expect(edge2).toBeDefined();
+      expect(edge2!.sourceId).toBe(sqlFind2Id);
+    });
+
+    it('includes default interface methods (not just abstract)', () => {
+      // Java 8 default method: IFoo { bar() } <-- Baz { bar() }
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IFoo', 'java', 'Interface');
+      addClass(graph, 'Baz', 'java');
+      addImplements(graph, 'Baz', 'IFoo');
+      // Default method (has body, not abstract) — should still get METHOD_IMPLEMENTS
+      addMethod(graph, 'IFoo', 'bar', 'Interface');
+      addMethod(graph, 'Baz', 'bar');
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(1);
+    });
+
+    it('does not emit METHOD_IMPLEMENTS for class extending another class', () => {
+      // Animal { speak() } <-- Dog { speak() } — EXTENDS, not IMPLEMENTS
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'Animal', 'java');
+      addClass(graph, 'Dog', 'java');
+      addExtends(graph, 'Dog', 'Animal');
+      addMethod(graph, 'Animal', 'speak');
+      addMethod(graph, 'Dog', 'speak');
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(0);
+    });
+
+    it('does not emit METHOD_IMPLEMENTS when class has no matching method', () => {
+      // IAnimal { speak() } <-- Dog { bark() } — no name match
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IAnimal', 'java', 'Interface');
+      addClass(graph, 'Dog', 'java');
+      addImplements(graph, 'Dog', 'IAnimal');
+      addMethod(graph, 'IAnimal', 'speak', 'Interface');
+      addMethod(graph, 'Dog', 'bark');
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(0);
+    });
+
+    it('skips Property nodes on interface', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IFoo', 'csharp', 'Interface');
+      addClass(graph, 'Bar', 'csharp');
+      addImplements(graph, 'Bar', 'IFoo');
+
+      // Add a Property to the interface (not a Method)
+      const propId = generateId('Property', 'IFoo.name');
+      graph.addNode({
+        id: propId,
+        label: 'Property',
+        properties: { name: 'name', filePath: 'src/IFoo.ts' },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Interface', 'IFoo')}->${propId}`),
+        sourceId: generateId('Interface', 'IFoo'),
+        targetId: propId,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+      addMethod(graph, 'Bar', 'name');
+
+      const result = computeMRO(graph);
+      expect(result.methodImplementsEdges).toBe(0);
+    });
+
+    it('is queryable via MATCH pattern', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IRepo', 'typescript', 'Interface');
+      addClass(graph, 'SqlRepo', 'typescript');
+      addImplements(graph, 'SqlRepo', 'IRepo');
+      addMethod(graph, 'IRepo', 'fetch', 'Interface');
+      const concreteId = addMethod(graph, 'SqlRepo', 'fetch');
+
+      computeMRO(graph);
+
+      // Simulate MATCH (m)-[:METHOD_IMPLEMENTS]->(i) RETURN m
+      const implementingMethods: string[] = [];
+      graph.forEachRelationship((rel) => {
+        if (rel.type === 'METHOD_IMPLEMENTS') {
+          implementingMethods.push(rel.sourceId);
+        }
+      });
+      expect(implementingMethods).toContain(concreteId);
     });
   });
 });

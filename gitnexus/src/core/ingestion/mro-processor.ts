@@ -3,7 +3,7 @@
  *
  * Walks the inheritance DAG (EXTENDS/IMPLEMENTS edges), collects methods from
  * each ancestor via HAS_METHOD edges, detects method-name collisions across
- * parents, and applies language-specific resolution rules to emit OVERRIDES edges.
+ * parents, and applies language-specific resolution rules to emit METHOD_OVERRIDES edges.
  *
  * Language-specific rules:
  * - C++:       leftmost base class in declaration order wins
@@ -13,10 +13,10 @@
  * - Rust:      no auto-resolution — requires qualified syntax, resolvedTo = null
  * - Default:   single inheritance — first definition wins
  *
- * OVERRIDES edge direction: Class → Method (not Method → Method).
+ * METHOD_OVERRIDES edge direction: Class → Method (not Method → Method).
  * The source is the child class that inherits conflicting methods,
  * the target is the winning ancestor method node.
- * Cypher: MATCH (c:Class)-[r:CodeRelation {type: 'OVERRIDES'}]->(m:Method)
+ * Cypher: MATCH (c:Class)-[r:CodeRelation {type: 'METHOD_OVERRIDES'}]->(m:Method)
  */
 
 import { KnowledgeGraph } from '../graph/types.js';
@@ -47,6 +47,7 @@ export interface MROResult {
   entries: MROEntry[];
   overrideEdges: number;
   ambiguityCount: number;
+  methodImplementsEdges: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -401,13 +402,13 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
         ambiguityCount++;
       }
 
-      // Emit OVERRIDES edge if resolution found
+      // Emit METHOD_OVERRIDES edge if resolution found
       if (resolution.resolvedTo !== null) {
         graph.addRelationship({
-          id: generateId('OVERRIDES', `${classId}->${resolution.resolvedTo}`),
+          id: generateId('METHOD_OVERRIDES', `${classId}->${resolution.resolvedTo}`),
           sourceId: classId,
           targetId: resolution.resolvedTo,
-          type: 'OVERRIDES',
+          type: 'METHOD_OVERRIDES',
           confidence: resolution.confidence,
           reason: resolution.reason,
         });
@@ -424,7 +425,112 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
     });
   }
 
-  return { entries, overrideEdges, ambiguityCount };
+  const methodImplementsEdges = emitMethodImplementsEdges(
+    graph,
+    parentMap,
+    methodMap,
+    parentEdgeType,
+  );
+
+  return { entries, overrideEdges, ambiguityCount, methodImplementsEdges };
+}
+
+// ---------------------------------------------------------------------------
+// METHOD_IMPLEMENTS edge emission
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if two parameter type arrays match.
+ * Lenient: if either side has no type info, match by name only.
+ */
+function parameterTypesMatch(a: string[], b: string[]): boolean {
+  if (a.length === 0 || b.length === 0) return true;
+  if (a.length !== b.length) return false;
+  return a.every((t, i) => t === b[i]);
+}
+
+/**
+ * For each concrete class that implements/extends an interface or trait,
+ * find methods in the class that implement methods defined in the interface
+ * and emit METHOD_IMPLEMENTS edges: ConcreteMethod → InterfaceMethod.
+ */
+function emitMethodImplementsEdges(
+  graph: KnowledgeGraph,
+  parentMap: Map<string, string[]>,
+  methodMap: Map<string, string[]>,
+  parentEdgeType: Map<string, Map<string, 'EXTENDS' | 'IMPLEMENTS'>>,
+): number {
+  let edgeCount = 0;
+
+  for (const [classId, parentIds] of parentMap) {
+    const classNode = graph.getNode(classId);
+    if (!classNode) continue;
+
+    // Get this class's own methods
+    const ownMethodIds = methodMap.get(classId) ?? [];
+    if (ownMethodIds.length === 0) continue;
+
+    // Build a lookup: methodName → Array<{methodId, parameterTypes}> for own methods
+    const ownMethodsByName = new Map<
+      string,
+      Array<{ methodId: string; parameterTypes: string[] }>
+    >();
+    for (const methodId of ownMethodIds) {
+      const methodNode = graph.getNode(methodId);
+      if (!methodNode || methodNode.label === 'Property') continue;
+      const name = methodNode.properties.name as string;
+      const parameterTypes = (methodNode.properties.parameterTypes as string[] | undefined) ?? [];
+      let bucket = ownMethodsByName.get(name);
+      if (!bucket) {
+        bucket = [];
+        ownMethodsByName.set(name, bucket);
+      }
+      bucket.push({ methodId, parameterTypes });
+    }
+
+    // For each parent, check if it's an interface/trait or connected via IMPLEMENTS
+    for (const parentId of parentIds) {
+      const parentNode = graph.getNode(parentId);
+      if (!parentNode) continue;
+
+      const isInterfaceLike = parentNode.label === 'Interface' || parentNode.label === 'Trait';
+      const edgeType = parentEdgeType.get(classId)?.get(parentId);
+      if (!isInterfaceLike && edgeType !== 'IMPLEMENTS') continue;
+
+      // Get parent's methods
+      const parentMethodIds = methodMap.get(parentId) ?? [];
+
+      for (const parentMethodId of parentMethodIds) {
+        const parentMethodNode = graph.getNode(parentMethodId);
+        if (!parentMethodNode || parentMethodNode.label === 'Property') continue;
+
+        const parentName = parentMethodNode.properties.name as string;
+        const parentParamTypes =
+          (parentMethodNode.properties.parameterTypes as string[] | undefined) ?? [];
+
+        // Find matching method in own class by name + parameterTypes
+        const candidates = ownMethodsByName.get(parentName);
+        if (!candidates) continue;
+
+        for (const candidate of candidates) {
+          if (parameterTypesMatch(candidate.parameterTypes, parentParamTypes)) {
+            graph.addRelationship({
+              id: generateId('METHOD_IMPLEMENTS', `${candidate.methodId}->${parentMethodId}`),
+              sourceId: candidate.methodId,
+              targetId: parentMethodId,
+              type: 'METHOD_IMPLEMENTS',
+              confidence: 1.0,
+              reason: '',
+            });
+            edgeCount++;
+            break; // first match wins for this parent method
+          }
+        }
+      }
+    }
+  }
+
+  return edgeCount;
 }
 
 /**

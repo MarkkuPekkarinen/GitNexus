@@ -71,7 +71,7 @@ describe('Java heritage resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -1649,5 +1649,55 @@ describe('Java method enrichment', () => {
       (c) => c.target === 'classify' && c.sourceFilePath.includes('App.java'),
     );
     expect(classifyCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java interface dispatch (METHOD_IMPLEMENTS)
+// Action interface: execute(), priority()
+// LogEvent implements Action, SendEmail implements Action
+// ---------------------------------------------------------------------------
+
+describe('Java interface dispatch (METHOD_IMPLEMENTS)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-interface-dispatch'), () => {});
+  }, 60000);
+
+  it('emits METHOD_IMPLEMENTS edges from LogEvent.execute → Action.execute', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edge = mi.find(
+      (e) =>
+        e.source === 'execute' &&
+        e.target === 'execute' &&
+        e.sourceFilePath.includes('LogEvent') &&
+        e.targetFilePath.includes('Action'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS edges from SendEmail.execute → Action.execute', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const edge = mi.find(
+      (e) =>
+        e.source === 'execute' &&
+        e.target === 'execute' &&
+        e.sourceFilePath.includes('SendEmail') &&
+        e.targetFilePath.includes('Action'),
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it('emits METHOD_IMPLEMENTS for priority() in both implementors', () => {
+    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
+    const priorityEdges = mi.filter(
+      (e) =>
+        e.source === 'priority' && e.target === 'priority' && e.targetFilePath.includes('Action'),
+    );
+    expect(priorityEdges.length).toBe(2);
+    const sourceFiles = priorityEdges.map((e) => e.sourceFilePath).sort();
+    expect(sourceFiles.some((f) => f.includes('LogEvent'))).toBe(true);
+    expect(sourceFiles.some((f) => f.includes('SendEmail'))).toBe(true);
   });
 });

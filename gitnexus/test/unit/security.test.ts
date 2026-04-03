@@ -114,7 +114,7 @@ describe('VALID_RELATION_TYPES', () => {
       'IMPLEMENTS',
       'HAS_METHOD',
       'HAS_PROPERTY',
-      'OVERRIDES',
+      'METHOD_OVERRIDES',
       'ACCESSES',
       'HANDLES_ROUTE',
       'FETCHES',

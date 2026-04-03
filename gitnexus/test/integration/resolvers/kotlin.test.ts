@@ -90,7 +90,7 @@ describe('Kotlin heritage resolution', () => {
   });
 
   it('no OVERRIDES edges target Property nodes', () => {
-    const overrides = getRelationships(result, 'OVERRIDES');
+    const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
