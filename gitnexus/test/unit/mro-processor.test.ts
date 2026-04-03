@@ -1090,4 +1090,54 @@ describe('computeMRO', () => {
       });
     });
   });
+
+  // ---- findInheritedMethod ambiguity detection ------------------------------
+  describe('findInheritedMethod ambiguity', () => {
+    it('returns null when two EXTENDS parents both provide matching method', () => {
+      // I { foo() }, B { foo() }, M { foo() }, C extends B + M, C implements I
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'I', 'cpp', 'Interface');
+      addClass(graph, 'B', 'cpp');
+      addClass(graph, 'M', 'cpp');
+      addClass(graph, 'C', 'cpp');
+      addImplements(graph, 'C', 'I');
+      addExtends(graph, 'C', 'B');
+      addExtends(graph, 'C', 'M');
+      addMethod(graph, 'I', 'foo', 'Interface');
+      addMethod(graph, 'B', 'foo');
+      addMethod(graph, 'M', 'foo');
+      // C has NO own foo — must walk EXTENDS chain
+
+      const result = computeMRO(graph);
+      // Ambiguous: B.foo and M.foo both match — no METHOD_IMPLEMENTS edge
+      const mi = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      const fooEdges = mi.filter((e) => graph.getNode(e.targetId)?.properties.name === 'foo');
+      expect(fooEdges).toHaveLength(0);
+    });
+
+    it('diamond dedup: same method via two paths is NOT ambiguous', () => {
+      // I { foo() }, GrandBase { foo() }, B extends GrandBase, M extends GrandBase
+      // C extends B + M, C implements I
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'I', 'cpp', 'Interface');
+      addClass(graph, 'GrandBase', 'cpp');
+      addClass(graph, 'B', 'cpp');
+      addClass(graph, 'M', 'cpp');
+      addClass(graph, 'C', 'cpp');
+      addImplements(graph, 'C', 'I');
+      addExtends(graph, 'C', 'B');
+      addExtends(graph, 'C', 'M');
+      addExtends(graph, 'B', 'GrandBase');
+      addExtends(graph, 'M', 'GrandBase');
+      addMethod(graph, 'I', 'foo', 'Interface');
+      const gbFoo = addMethod(graph, 'GrandBase', 'foo');
+      // B and M have NO own foo — both inherit from GrandBase
+
+      const result = computeMRO(graph);
+      // Not ambiguous: same GrandBase.foo via both paths
+      const mi = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      const fooEdge = mi.find((e) => e.sourceId === gbFoo);
+      expect(fooEdge).toBeDefined();
+    });
+  });
 });

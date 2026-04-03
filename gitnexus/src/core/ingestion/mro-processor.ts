@@ -632,6 +632,11 @@ function findInheritedMethod(
     }
   }
 
+  // Collect all matches across the full BFS, then check for ambiguity.
+  // If the same methodId is reachable via multiple paths (diamond), it's not
+  // ambiguous. Only distinct methodIds count as separate matches.
+  const matches = new Map<string, { methodId: string; parameterTypes: string[] }>();
+
   while (queue.length > 0) {
     const ancestorId = queue.shift()!;
     if (visited.has(ancestorId)) continue;
@@ -647,7 +652,7 @@ function findInheritedMethod(
       const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
       const mParamCount = mNode.properties.parameterCount as number | undefined;
       if (parameterTypesMatch(mParamTypes, targetParamTypes, mParamCount, targetParamCount)) {
-        return { methodId: mid, parameterTypes: mParamTypes };
+        matches.set(mid, { methodId: mid, parameterTypes: mParamTypes });
       }
     }
 
@@ -666,7 +671,9 @@ function findInheritedMethod(
     }
   }
 
-  return null;
+  // Ambiguous: 2+ distinct methods from different ancestors
+  if (matches.size === 1) return matches.values().next().value!;
+  return null; // 0 matches or ambiguous (2+)
 }
 
 /**
