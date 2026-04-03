@@ -443,23 +443,31 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
  * Check if two parameter type arrays match.
  * When either side has no type info, fall back to parameterCount comparison
  * (arity-compatible matching). If both have parameterCount and they differ,
- * return false. If counts match or either is undefined, return true (lenient).
+ * return no match. If counts match, return confident match. If either count
+ * is undefined, return lenient (non-confident) match.
+ *
+ * Returns `{ match, confident }`:
+ * - Exact type match → `{ match: true, confident: true }`
+ * - Arity match (both have parameterCount, counts equal) → `{ match: true, confident: true }`
+ * - Lenient (either side lacks types AND lacks parameterCount) → `{ match: true, confident: false }`
+ * - No match → `{ match: false, confident: false }`
  */
 function parameterTypesMatch(
   a: string[],
   b: string[],
   aParamCount?: number,
   bParamCount?: number,
-): boolean {
+): { match: boolean; confident: boolean } {
   if (a.length === 0 || b.length === 0) {
     // Fall back to arity check when type info is missing
     if (aParamCount !== undefined && bParamCount !== undefined) {
-      return aParamCount === bParamCount;
+      return { match: aParamCount === bParamCount, confident: aParamCount === bParamCount };
     }
-    return true; // lenient when either count is unknown
+    return { match: true, confident: false }; // lenient when either count is unknown
   }
-  if (a.length !== b.length) return false;
-  return a.every((t, i) => t === b[i]);
+  if (a.length !== b.length) return { match: false, confident: false };
+  const exact = a.every((t, i) => t === b[i]);
+  return { match: exact, confident: exact };
 }
 
 /**
@@ -550,6 +558,7 @@ function emitMethodImplementsEdges(
             parentMap,
             methodMap,
             parentEdgeType,
+            ancestorMethodId,
           );
           if (inherited) {
             const edgeKey = `${inherited.methodId}->${ancestorMethodId}`;
@@ -560,7 +569,7 @@ function emitMethodImplementsEdges(
                 sourceId: inherited.methodId,
                 targetId: ancestorMethodId,
                 type: 'METHOD_IMPLEMENTS',
-                confidence: 1.0,
+                confidence: inherited.confident ? 1.0 : 0.7,
                 reason: '',
               });
               edgeCount++;
@@ -570,14 +579,23 @@ function emitMethodImplementsEdges(
         }
 
         // Unit 4: Filter candidates by type/arity match, then check for ambiguity
-        const matching = candidates.filter((c) =>
-          parameterTypesMatch(
+        const matching: Array<{
+          methodId: string;
+          parameterTypes: string[];
+          parameterCount?: number;
+          confident: boolean;
+        }> = [];
+        for (const c of candidates) {
+          const result = parameterTypesMatch(
             c.parameterTypes,
             ancestorParamTypes,
             c.parameterCount,
             ancestorParamCount,
-          ),
-        );
+          );
+          if (result.match) {
+            matching.push({ ...c, confident: result.confident });
+          }
+        }
 
         if (matching.length === 0) continue;
 
@@ -594,7 +612,7 @@ function emitMethodImplementsEdges(
           sourceId: winner.methodId,
           targetId: ancestorMethodId,
           type: 'METHOD_IMPLEMENTS',
-          confidence: 1.0,
+          confidence: winner.confident ? 1.0 : 0.7,
           reason: '',
         });
         edgeCount++;
@@ -606,8 +624,10 @@ function emitMethodImplementsEdges(
 }
 
 /**
- * Walk the class's EXTENDS chain (not IMPLEMENTS) to find the nearest
- * concrete method matching the given name and parameter signature.
+ * Walk the class's EXTENDS chain to find the nearest concrete method matching
+ * the given name and parameter signature. If the EXTENDS chain yields no match,
+ * fall back to IMPLEMENTS parents and check for non-abstract default methods
+ * (e.g. Java default interface methods, Kotlin interface defaults).
  * Returns the first matching method found in BFS order, or null.
  */
 function findInheritedMethod(
@@ -619,7 +639,10 @@ function findInheritedMethod(
   parentMap: Map<string, string[]>,
   methodMap: Map<string, string[]>,
   parentEdgeType: Map<string, Map<string, 'EXTENDS' | 'IMPLEMENTS'>>,
-): { methodId: string; parameterTypes: string[] } | null {
+  /** Method ID to exclude from results (prevents self-edges when the ancestor
+   *  method being matched lives on an IMPLEMENTS parent). */
+  excludeMethodId?: string,
+): { methodId: string; parameterTypes: string[]; confident: boolean } | null {
   const visited = new Set<string>();
   const queue: string[] = [];
 
@@ -643,7 +666,10 @@ function findInheritedMethod(
   let currentLevel = [...queue];
 
   while (currentLevel.length > 0) {
-    const matches = new Map<string, { methodId: string; parameterTypes: string[] }>();
+    const matches = new Map<
+      string,
+      { methodId: string; parameterTypes: string[]; confident: boolean }
+    >();
     const nextLevel: string[] = [];
 
     for (const ancestorId of currentLevel) {
@@ -661,8 +687,18 @@ function findInheritedMethod(
 
         const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
         const mParamCount = mNode.properties.parameterCount as number | undefined;
-        if (parameterTypesMatch(mParamTypes, targetParamTypes, mParamCount, targetParamCount)) {
-          matches.set(mid, { methodId: mid, parameterTypes: mParamTypes });
+        const ptResult = parameterTypesMatch(
+          mParamTypes,
+          targetParamTypes,
+          mParamCount,
+          targetParamCount,
+        );
+        if (ptResult.match) {
+          matches.set(mid, {
+            methodId: mid,
+            parameterTypes: mParamTypes,
+            confident: ptResult.confident,
+          });
         }
       }
 
@@ -686,6 +722,52 @@ function findInheritedMethod(
     if (matches.size > 1) return null; // ambiguous at same depth
 
     currentLevel = nextLevel;
+  }
+
+  // ── Second pass: walk IMPLEMENTS parents AND their interface ancestry ──
+  // Only reached when the EXTENDS chain yielded no match.
+  // BFS through interface/trait hierarchy to find default (non-abstract) methods.
+  const implBfsQueue: string[] = [];
+  for (const pid of directParents) {
+    const et = directEdges?.get(pid);
+    if (et === 'IMPLEMENTS') {
+      implBfsQueue.push(pid);
+    }
+  }
+
+  const implVisited = new Set<string>();
+  while (implBfsQueue.length > 0) {
+    const ifaceId = implBfsQueue.shift()!;
+    if (implVisited.has(ifaceId)) continue;
+    implVisited.add(ifaceId);
+
+    // Check this interface/trait's methods for a non-abstract default
+    const methods = methodMap.get(ifaceId) ?? [];
+    for (const mid of methods) {
+      if (mid === excludeMethodId) continue; // prevent self-edges
+      const mNode = graph.getNode(mid);
+      if (!mNode || mNode.label === 'Property') continue;
+      if (mNode.properties.isAbstract === true) continue;
+      if (mNode.properties.name !== methodName) continue;
+
+      const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
+      const mParamCount = mNode.properties.parameterCount as number | undefined;
+      const ptResult = parameterTypesMatch(
+        mParamTypes,
+        targetParamTypes,
+        mParamCount,
+        targetParamCount,
+      );
+      if (ptResult.match) {
+        return { methodId: mid, parameterTypes: mParamTypes, confident: ptResult.confident };
+      }
+    }
+
+    // Walk this interface's parents (interface-extends-interface chains)
+    const ifaceParents = parentMap.get(ifaceId) ?? [];
+    for (const gp of ifaceParents) {
+      if (!implVisited.has(gp)) implBfsQueue.push(gp);
+    }
   }
 
   return null; // no matches found

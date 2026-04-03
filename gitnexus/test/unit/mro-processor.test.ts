@@ -29,6 +29,7 @@ function addMethod(
   methodName: string,
   classLabel: 'Class' | 'Interface' | 'Struct' | 'Trait' = 'Class',
   parameterTypes?: string[],
+  opts?: { isAbstract?: boolean },
 ) {
   const classId = generateId(classLabel, className);
   const methodId = generateId('Method', `${className}.${methodName}`);
@@ -39,6 +40,7 @@ function addMethod(
       name: methodName,
       filePath: `src/${className}.ts`,
       ...(parameterTypes ? { parameterTypes } : {}),
+      ...(opts?.isAbstract !== undefined ? { isAbstract: opts.isAbstract } : {}),
     },
   });
   graph.addRelationship({
@@ -558,7 +560,8 @@ describe('computeMRO', () => {
       expect(edges).toHaveLength(1);
       expect(edges[0].sourceId).toBe(classMethod);
       expect(edges[0].targetId).toBe(ifaceMethod);
-      expect(edges[0].confidence).toBe(1.0);
+      // No parameterTypes or parameterCount on either side → lenient match → 0.7
+      expect(edges[0].confidence).toBe(0.7);
     });
 
     it('emits METHOD_IMPLEMENTS for Rust struct implementing trait', () => {
@@ -1260,6 +1263,235 @@ describe('computeMRO', () => {
       const mi = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
       expect(mi).toHaveLength(1);
       expect(mi[0].sourceId).toBe(cFoo);
+    });
+  });
+
+  describe('default interface method resolution', () => {
+    it('interface default method satisfies grandparent interface contract', () => {
+      // I1 has abstract bar, I2 extends I1 and provides concrete bar,
+      // C implements I2 with no own bar → edge from I2.bar → I1.bar
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'I1Def', 'java', 'Interface');
+      addClass(graph, 'I2Def', 'java', 'Interface');
+      addClass(graph, 'CDef', 'java');
+
+      addInterfaceExtends(graph, 'I2Def', 'I1Def');
+      addImplements(graph, 'CDef', 'I2Def');
+
+      const i1Bar = addMethod(graph, 'I1Def', 'bar', 'Interface', undefined, { isAbstract: true });
+      const i2Bar = addMethod(graph, 'I2Def', 'bar', 'Interface', undefined, {
+        isAbstract: false,
+      });
+
+      const result = computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(i2Bar);
+      expect(edges[0].targetId).toBe(i1Bar);
+    });
+
+    it('own method takes priority over interface default', () => {
+      // I has concrete default bar, C implements I and has own bar
+      // → edge from C.bar → I.bar (own method wins, no IMPLEMENTS fallback needed)
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IOwn', 'java', 'Interface');
+      addClass(graph, 'COwn', 'java');
+
+      addImplements(graph, 'COwn', 'IOwn');
+
+      const iBar = addMethod(graph, 'IOwn', 'bar', 'Interface', undefined, { isAbstract: false });
+      const cBar = addMethod(graph, 'COwn', 'bar');
+
+      computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(cBar);
+      expect(edges[0].targetId).toBe(iBar);
+    });
+
+    it('transitive interface default: C implements I2, I2 extends I1, I1 has abstract bar, I2 has default bar → I2.bar satisfies I1.bar', () => {
+      // I1 (Interface) has abstract bar
+      // I2 (Interface) extends I1, has concrete default bar
+      // C (Class) implements I2, has NO bar
+      // The main emitter processes CImpl's ancestor I1 (transitive via I2).
+      // I1.bar is abstract → CImpl has no own bar → findInheritedMethod runs.
+      // EXTENDS BFS: nothing. IMPLEMENTS BFS: walks I2 → finds concrete I2.bar.
+      // Edge: I2.bar → I1.bar
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'I1', 'java', 'Interface');
+      addClass(graph, 'I2', 'java', 'Interface');
+      addClass(graph, 'CImpl', 'java');
+
+      // I1 has abstract bar
+      const i1Bar = addMethod(graph, 'I1', 'bar', 'Interface', undefined, { isAbstract: true });
+      // I2 has concrete default bar
+      const i2Bar = addMethod(graph, 'I2', 'bar', 'Interface');
+
+      // I2 extends I1
+      const i2Id = generateId('Interface', 'I2');
+      const i1Id = generateId('Interface', 'I1');
+      graph.addRelationship({
+        id: generateId('EXTENDS', `${i2Id}->${i1Id}`),
+        sourceId: i2Id,
+        targetId: i1Id,
+        type: 'EXTENDS',
+        confidence: 1.0,
+        reason: '',
+      });
+      // CImpl implements I2
+      addImplements(graph, 'CImpl', 'I2');
+
+      const result = computeMRO(graph);
+      const mi = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      // I2.bar (concrete default) satisfies I1.bar (abstract contract)
+      const barEdge = mi.find((e) => e.targetId === i1Bar && e.sourceId === i2Bar);
+      expect(barEdge).toBeDefined();
+    });
+
+    it('EXTENDS method takes priority over interface default', () => {
+      // I has concrete default foo, Base has concrete foo,
+      // C extends Base and implements I with no own foo
+      // → edge from Base.foo → I.foo (EXTENDS wins over IMPLEMENTS default)
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IExtPri', 'java', 'Interface');
+      addClass(graph, 'BaseExtPri', 'java');
+      addClass(graph, 'CExtPri', 'java');
+
+      addExtends(graph, 'CExtPri', 'BaseExtPri');
+      addImplements(graph, 'CExtPri', 'IExtPri');
+
+      const iFoo = addMethod(graph, 'IExtPri', 'foo', 'Interface', undefined, {
+        isAbstract: false,
+      });
+      const baseFoo = addMethod(graph, 'BaseExtPri', 'foo');
+
+      computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(baseFoo);
+      expect(edges[0].targetId).toBe(iFoo);
+    });
+  });
+
+  describe('METHOD_IMPLEMENTS confidence tiering', () => {
+    it('fully-typed match gets confidence 1.0', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'ITyped', 'java', 'Interface');
+      addClass(graph, 'CTyped', 'java');
+      addImplements(graph, 'CTyped', 'ITyped');
+
+      const iFoo = addMethod(graph, 'ITyped', 'foo', 'Interface', ['int', 'String']);
+      const cFoo = addMethod(graph, 'CTyped', 'foo', 'Class', ['int', 'String']);
+
+      computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(cFoo);
+      expect(edges[0].targetId).toBe(iFoo);
+      expect(edges[0].confidence).toBe(1.0);
+    });
+
+    it('arity-only match (both have parameterCount, no types) gets confidence 1.0', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IArity', 'java', 'Interface');
+      addClass(graph, 'CArity', 'java');
+      addImplements(graph, 'CArity', 'IArity');
+
+      // Manually add methods with parameterCount but no parameterTypes
+      const iBarId = generateId('Method', 'IArity.bar');
+      graph.addNode({
+        id: iBarId,
+        label: 'Method',
+        properties: { name: 'bar', filePath: 'src/IArity.ts', parameterCount: 2 },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Interface', 'IArity')}->${iBarId}`),
+        sourceId: generateId('Interface', 'IArity'),
+        targetId: iBarId,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      const cBarId = generateId('Method', 'CArity.bar');
+      graph.addNode({
+        id: cBarId,
+        label: 'Method',
+        properties: { name: 'bar', filePath: 'src/CArity.ts', parameterCount: 2 },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Class', 'CArity')}->${cBarId}`),
+        sourceId: generateId('Class', 'CArity'),
+        targetId: cBarId,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(cBarId);
+      expect(edges[0].targetId).toBe(iBarId);
+      expect(edges[0].confidence).toBe(1.0);
+    });
+
+    it('lenient match (no types, no parameterCount on both sides) gets confidence 0.7', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'ILenient', 'java', 'Interface');
+      addClass(graph, 'CLenient', 'java');
+      addImplements(graph, 'CLenient', 'ILenient');
+
+      // addMethod without parameterTypes → no types, no parameterCount
+      const iBaz = addMethod(graph, 'ILenient', 'baz', 'Interface');
+      const cBaz = addMethod(graph, 'CLenient', 'baz');
+
+      computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(cBaz);
+      expect(edges[0].targetId).toBe(iBaz);
+      expect(edges[0].confidence).toBe(0.7);
+    });
+
+    it('one side has parameterCount, other does not → confidence 0.7', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'IHalf', 'java', 'Interface');
+      addClass(graph, 'CHalf', 'java');
+      addImplements(graph, 'CHalf', 'IHalf');
+
+      // Interface method has parameterCount but no parameterTypes
+      const iQuxId = generateId('Method', 'IHalf.qux');
+      graph.addNode({
+        id: iQuxId,
+        label: 'Method',
+        properties: { name: 'qux', filePath: 'src/IHalf.ts', parameterCount: 2 },
+      });
+      graph.addRelationship({
+        id: generateId('HAS_METHOD', `${generateId('Interface', 'IHalf')}->${iQuxId}`),
+        sourceId: generateId('Interface', 'IHalf'),
+        targetId: iQuxId,
+        type: 'HAS_METHOD',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      // Class method has neither parameterTypes nor parameterCount
+      const cQux = addMethod(graph, 'CHalf', 'qux');
+
+      computeMRO(graph);
+
+      const edges = graph.relationships.filter((r) => r.type === 'METHOD_IMPLEMENTS');
+      expect(edges).toHaveLength(1);
+      expect(edges[0].sourceId).toBe(cQux);
+      expect(edges[0].targetId).toBe(iQuxId);
+      expect(edges[0].confidence).toBe(0.7);
     });
   });
 });

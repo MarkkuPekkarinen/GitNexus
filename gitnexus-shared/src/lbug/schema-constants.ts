@@ -56,6 +56,7 @@ export const REL_TYPES = [
   'HAS_PROPERTY',
   'ACCESSES',
   'METHOD_OVERRIDES',
+  'OVERRIDES', // Legacy compat alias — kept until all stored indexes are migrated
   'METHOD_IMPLEMENTS',
   'MEMBER_OF',
   'STEP_IN_PROCESS',
