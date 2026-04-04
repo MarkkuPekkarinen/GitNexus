@@ -276,14 +276,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
   // CORS: allow localhost, private/LAN networks, and the deployed site.
   // Non-browser requests (curl, server-to-server) have no origin and are allowed.
+  // Disallowed origins get the response without Access-Control-Allow-Origin,
+  // so the browser blocks it. We pass `false` instead of throwing an Error to
+  // avoid crashing into Express's default error handler (which returned 500).
   app.use(
     cors({
       origin: (origin, callback) => {
-        if (isAllowedOrigin(origin)) {
-          callback(null, true);
-        } else {
-          callback(new Error('Not allowed by CORS'));
-        }
+        callback(null, isAllowedOrigin(origin) ? true : false);
       },
     }),
   );
