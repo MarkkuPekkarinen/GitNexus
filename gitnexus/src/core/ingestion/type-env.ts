@@ -2,6 +2,7 @@ import {
   type SyntaxNode,
   FUNCTION_NODE_TYPES,
   CLASS_CONTAINER_TYPES,
+  genericFuncName,
 } from './utils/ast-helpers.js';
 import { CALL_EXPRESSION_TYPES } from './utils/call-analysis.js';
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -355,24 +356,6 @@ const extractParentClassFromNode = (classNode: SyntaxNode): string | undefined =
   }
 
   return undefined;
-};
-
-/** Generic name extraction from a function-like AST node: tries 'name' field,
- *  then scans children for common identifier types. */
-const genericFuncName = (node: SyntaxNode): string | null => {
-  const nameField = node.childForFieldName?.('name');
-  if (nameField) return nameField.text;
-  for (let i = 0; i < node.childCount; i++) {
-    const c = node.child(i);
-    if (
-      c?.type === 'identifier' ||
-      c?.type === 'property_identifier' ||
-      c?.type === 'simple_identifier'
-    ) {
-      return c.text;
-    }
-  }
-  return null;
 };
 
 /** Find the enclosing function name for scope lookup.

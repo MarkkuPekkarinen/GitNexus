@@ -47,7 +47,13 @@ export const getDefinitionNodeFromCaptures = (
 
 /**
  * Node types that represent function/method definitions across languages.
- * Used to find the enclosing function for a call site.
+ * Used by parent-walk in call-processor, parse-worker, and type-env to detect
+ * enclosing function scope boundaries.
+ *
+ * INVARIANT: This set MUST be a superset of every language's
+ * MethodExtractionConfig.methodNodeTypes. When adding a new node type to a
+ * MethodExtractor config, add it here too — otherwise enclosing-function
+ * resolution will silently miss that node type during parent-walks.
  */
 export const FUNCTION_NODE_TYPES = new Set([
   // TypeScript/JavaScript
@@ -151,20 +157,6 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   object_declaration: 'Class',
   companion_object: 'Class',
 };
-
-/** Check if a Kotlin function_declaration capture is inside a class_body (i.e., a method).
- *  Kotlin grammar uses function_declaration for both top-level functions and class methods.
- *  Returns true when the captured definition node has a class_body ancestor. */
-export function isKotlinClassMethod(
-  captureNode: { parent?: SyntaxNode | null } | null | undefined,
-): boolean {
-  let ancestor = captureNode?.parent;
-  while (ancestor) {
-    if (ancestor.type === 'class_body') return true;
-    ancestor = ancestor.parent;
-  }
-  return false;
-}
 
 /**
  * Determine the graph node label from a tree-sitter capture map.
@@ -372,6 +364,46 @@ export const findSiblingChild = (
   return null;
 };
 
+/** Generic name extraction from a function-like AST node.
+ *  Tries `node.childForFieldName('name')?.text`, then scans children for
+ *  `identifier` / `property_identifier` / `simple_identifier`. */
+export const genericFuncName = (node: SyntaxNode): string | null => {
+  const nameField = node.childForFieldName?.('name');
+  if (nameField) return nameField.text;
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (
+      c?.type === 'identifier' ||
+      c?.type === 'property_identifier' ||
+      c?.type === 'simple_identifier'
+    )
+      return c.text;
+  }
+  return null;
+};
+
+/** AST node types that represent a method definition (for `inferFunctionLabel`). */
+export const METHOD_LABEL_NODE_TYPES = new Set([
+  'method_definition',
+  'method_declaration',
+  'method',
+  'singleton_method',
+]);
+
+/** AST node types that represent a constructor definition (for `inferFunctionLabel`). */
+export const CONSTRUCTOR_LABEL_NODE_TYPES = new Set([
+  'constructor_declaration',
+  'compact_constructor_declaration',
+]);
+
+/** Infer node label from AST node type for function-like nodes without a provider hook. */
+export const inferFunctionLabel = (nodeType: string): NodeLabel =>
+  METHOD_LABEL_NODE_TYPES.has(nodeType)
+    ? 'Method'
+    : CONSTRUCTOR_LABEL_NODE_TYPES.has(nodeType)
+      ? 'Constructor'
+      : 'Function';
+
 /** Argument list node types shared between countCallArguments and call-resolution helpers. */
 export const CALL_ARGUMENT_LIST_TYPES = new Set(['arguments', 'argument_list', 'value_arguments']);
 
@@ -396,18 +428,6 @@ export function extractStringContent(node: SyntaxNode | null | undefined): strin
   if (content) return content.text;
   if (node.type === 'string_content') return node.text;
   return null;
-}
-
-/** Check if a C/C++ function_definition is inside a class or struct body.
- *  Used by the C/C++ labelOverride to skip duplicate function captures
- *  that are already covered by definition.method queries. */
-export function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
-  let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
-  while (ancestor) {
-    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
-    ancestor = ancestor.parent;
-  }
-  return false;
 }
 
 /** Find the first direct named child of a tree-sitter node matching the given type. */

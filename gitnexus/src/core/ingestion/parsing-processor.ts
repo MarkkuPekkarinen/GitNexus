@@ -21,6 +21,7 @@ import { detectFrameworkFromAST } from './framework-detection.js';
 import { buildTypeEnv } from './type-env.js';
 import type { FieldInfo, FieldExtractorContext } from './field-types.js';
 import type { MethodInfo } from './method-types.js';
+import { buildMethodProps, arityForIdFromInfo } from './utils/method-props.js';
 import type { LanguageProvider } from './language-provider.js';
 import { WorkerPool } from './workers/worker-pool.js';
 import type {
@@ -231,35 +232,6 @@ function seqFindEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
-/** Convert MethodInfo from methodExtractor into flat properties for a graph node. */
-function buildMethodProps(info: MethodInfo): Record<string, unknown> {
-  const types: string[] = [];
-  let optionalCount = 0;
-  let hasVariadic = false;
-  for (const p of info.parameters) {
-    if (p.type !== null) types.push(p.type);
-    if (p.isOptional) optionalCount++;
-    if (p.isVariadic) hasVariadic = true;
-  }
-  return {
-    parameterCount: hasVariadic ? undefined : info.parameters.length,
-    ...(!hasVariadic && optionalCount > 0
-      ? { requiredParameterCount: info.parameters.length - optionalCount }
-      : {}),
-    ...(types.length > 0 ? { parameterTypes: types } : {}),
-    returnType: info.returnType ?? undefined,
-    visibility: info.visibility,
-    isStatic: info.isStatic,
-    isAbstract: info.isAbstract,
-    isFinal: info.isFinal,
-    ...(info.isVirtual ? { isVirtual: info.isVirtual } : {}),
-    ...(info.isOverride ? { isOverride: info.isOverride } : {}),
-    ...(info.isAsync ? { isAsync: info.isAsync } : {}),
-    ...(info.isPartial ? { isPartial: info.isPartial } : {}),
-    ...(info.annotations.length > 0 ? { annotations: info.annotations } : {}),
-  };
-}
-
 /** Minimal no-op SymbolTable stub for FieldExtractorContext (sequential path has a real
  *  SymbolTable, but it's incomplete at this stage — use the stub for safety). */
 const NOOP_SYMBOL_TABLE_SEQ = {
@@ -451,9 +423,7 @@ const processParsingSequential = async (
               const info = result.methods.find((m) => m.name === nodeName && m.line === defLine);
               if (info) {
                 enriched = true;
-                arityForId = info.parameters.some((p) => p.isVariadic)
-                  ? undefined
-                  : info.parameters.length;
+                arityForId = arityForIdFromInfo(info);
                 methodProps = buildMethodProps(info);
               }
             }
@@ -467,9 +437,7 @@ const processParsingSequential = async (
             });
             if (info) {
               enriched = true;
-              arityForId = info.parameters.some((p) => p.isVariadic)
-                ? undefined
-                : info.parameters.length;
+              arityForId = arityForIdFromInfo(info);
               methodProps = buildMethodProps(info);
             }
           }

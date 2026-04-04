@@ -14,6 +14,8 @@ import {
   FUNCTION_NODE_TYPES,
   findEnclosingClassId,
   findEnclosingClassInfo,
+  genericFuncName,
+  inferFunctionLabel,
 } from './utils/ast-helpers.js';
 import {
   countCallArguments,
@@ -218,40 +220,6 @@ const TYPE_PRESERVING_METHODS = new Set([
   'get', // Kotlin/Java Optional.get()
   'orElseThrow', // Java Optional
 ]);
-
-/** Generic name extraction from a function-like AST node. */
-const genericFuncName = (node: SyntaxNode): string | null => {
-  const nameField = node.childForFieldName?.('name');
-  if (nameField) return nameField.text;
-  for (let i = 0; i < node.childCount; i++) {
-    const c = node.child(i);
-    if (
-      c?.type === 'identifier' ||
-      c?.type === 'property_identifier' ||
-      c?.type === 'simple_identifier'
-    )
-      return c.text;
-  }
-  return null;
-};
-
-/** Infer node label from AST node type for function-like nodes without a provider hook. */
-const METHOD_NODE_TYPES = new Set([
-  'method_definition',
-  'method_declaration',
-  'method',
-  'singleton_method',
-]);
-const CONSTRUCTOR_NODE_TYPES = new Set([
-  'constructor_declaration',
-  'compact_constructor_declaration',
-]);
-const inferFunctionLabel = (nodeType: string): import('gitnexus-shared').NodeLabel =>
-  METHOD_NODE_TYPES.has(nodeType)
-    ? 'Method'
-    : CONSTRUCTOR_NODE_TYPES.has(nodeType)
-      ? 'Constructor'
-      : 'Function';
 
 /**
  * Walk up the AST from a node to find the enclosing function/method.

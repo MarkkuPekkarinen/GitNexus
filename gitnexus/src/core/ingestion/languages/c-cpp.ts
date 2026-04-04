@@ -15,8 +15,6 @@ import { cCppExportChecker } from '../export-detection.js';
 import { resolveCImport, resolveCppImport } from '../import-resolvers/standard.js';
 import { C_QUERIES, CPP_QUERIES } from '../tree-sitter-queries.js';
 
-import { isCppInsideClassOrStruct } from '../utils/ast-helpers.js';
-
 /**
  * Node types for standard function declarations that need C/C++ declarator handling.
  * Used by cCppExtractFunctionName to determine how to extract the function name.
@@ -281,6 +279,18 @@ const cCppExtractFunctionName = (
 
   return { funcName, label };
 };
+
+/** Check if a C/C++ function_definition is inside a class or struct body.
+ *  Used by cppLabelOverride to skip duplicate function captures
+ *  that are already covered by definition.method queries. */
+function isCppInsideClassOrStruct(functionNode: SyntaxNode): boolean {
+  let ancestor: SyntaxNode | null = functionNode?.parent ?? null;
+  while (ancestor) {
+    if (ancestor.type === 'class_specifier' || ancestor.type === 'struct_specifier') return true;
+    ancestor = ancestor.parent;
+  }
+  return false;
+}
 
 /** Label override shared by C and C++: skip function_definition captures inside class/struct
  *  bodies (they're duplicates of definition.method captures). */

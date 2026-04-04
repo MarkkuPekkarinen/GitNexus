@@ -47,6 +47,9 @@ import {
   getLabelFromCaptures,
   findDescendant,
   extractStringContent,
+  genericFuncName,
+  inferFunctionLabel,
+  CLASS_CONTAINER_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import {
@@ -73,7 +76,8 @@ import type { NamedBinding } from '../named-bindings/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
-import { CLASS_CONTAINER_TYPES } from '../utils/ast-helpers.js';
+import { buildMethodProps, arityForIdFromInfo } from '../utils/method-props.js';
+import type { LanguageProvider } from '../language-provider.js';
 
 // ============================================================================
 // Types for serializable results
@@ -92,14 +96,8 @@ interface ParsedNode {
     astFrameworkMultiplier?: number;
     astFrameworkReason?: string;
     description?: string;
-    parameterCount?: number;
-    requiredParameterCount?: number;
-    returnType?: string;
-    // Field/property metadata (populated by FieldExtractor)
-    declaredType?: string;
-    visibility?: string;
-    isStatic?: boolean;
-    isReadonly?: boolean;
+    // Method/field metadata — extensible via buildMethodProps spread
+    [key: string]: unknown;
   };
 }
 
@@ -508,42 +506,6 @@ function getMethodInfo(
 // ============================================================================
 // Enclosing function detection (for call extraction) — cached
 // ============================================================================
-
-import type { LanguageProvider } from '../language-provider.js';
-
-/** Generic name extraction from a function-like AST node. */
-const genericFuncName = (node: SyntaxNode): string | null => {
-  const nameField = node.childForFieldName?.('name');
-  if (nameField) return nameField.text;
-  for (let i = 0; i < node.childCount; i++) {
-    const c = node.child(i);
-    if (
-      c?.type === 'identifier' ||
-      c?.type === 'property_identifier' ||
-      c?.type === 'simple_identifier'
-    )
-      return c.text;
-  }
-  return null;
-};
-
-/** Infer node label from AST node type for function-like nodes without a provider hook. */
-const METHOD_NODE_TYPES = new Set([
-  'method_definition',
-  'method_declaration',
-  'method',
-  'singleton_method',
-]);
-const CONSTRUCTOR_NODE_TYPES = new Set([
-  'constructor_declaration',
-  'compact_constructor_declaration',
-]);
-const inferFunctionLabel = (nodeType: string): import('gitnexus-shared').NodeLabel =>
-  METHOD_NODE_TYPES.has(nodeType)
-    ? 'Method'
-    : CONSTRUCTOR_NODE_TYPES.has(nodeType)
-      ? 'Constructor'
-      : 'Function';
 
 /** Walk up AST to find enclosing function, return its generateId or null for top-level.
  *  Applies provider.labelOverride so the label matches the definition phase (single source of truth). */
@@ -1855,21 +1817,8 @@ const processFileGroup = (
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
-      let parameterCount: number | undefined;
-      let requiredParameterCount: number | undefined;
-      let parameterTypes: string[] | undefined;
-      let returnType: string | undefined;
       let declaredType: string | undefined;
-      let visibility: string | undefined;
-      let isStatic: boolean | undefined;
-      let isReadonly: boolean | undefined;
-      let isAbstract: boolean | undefined;
-      let isFinal: boolean | undefined;
-      let isVirtual: boolean | undefined;
-      let isOverride: boolean | undefined;
-      let isAsync: boolean | undefined;
-      let isPartial: boolean | undefined;
-      let annotations: string[] | undefined;
+      let methodProps: Record<string, unknown> = {};
       let arityForId: number | undefined; // raw param count for ID, even for variadic
       if (nodeLabel === 'Function' || nodeLabel === 'Method' || nodeLabel === 'Constructor') {
         // Use MethodExtractor for method metadata — provides parameterCount, parameterTypes,
@@ -1887,30 +1836,8 @@ const processFileGroup = (
             const info = methodMap?.get(`${nodeName}:${defLine}`);
             if (info) {
               enrichedByMethodExtractor = true;
-              const hasVariadic = info.parameters.some((p) => p.isVariadic);
-              arityForId = hasVariadic ? undefined : info.parameters.length;
-              parameterCount = hasVariadic ? undefined : info.parameters.length;
-              const types: string[] = [];
-              let optionalCount = 0;
-              for (const p of info.parameters) {
-                if (p.type !== null) types.push(p.type);
-                if (p.isOptional) optionalCount++;
-              }
-              parameterTypes = types.length > 0 ? types : undefined;
-              requiredParameterCount =
-                !hasVariadic && optionalCount > 0
-                  ? info.parameters.length - optionalCount
-                  : undefined;
-              returnType = info.returnType ?? undefined;
-              visibility = info.visibility;
-              isStatic = info.isStatic;
-              isAbstract = info.isAbstract;
-              isFinal = info.isFinal;
-              if (info.isVirtual) isVirtual = info.isVirtual;
-              if (info.isOverride) isOverride = info.isOverride;
-              if (info.isAsync) isAsync = info.isAsync;
-              if (info.isPartial) isPartial = info.isPartial;
-              if (info.annotations.length > 0) annotations = info.annotations;
+              arityForId = arityForIdFromInfo(info);
+              methodProps = buildMethodProps(info);
             }
           }
         }
@@ -1927,30 +1854,8 @@ const processFileGroup = (
           });
           if (info) {
             enrichedByMethodExtractor = true;
-            const hasVariadic = info.parameters.some((p) => p.isVariadic);
-            arityForId = hasVariadic ? undefined : info.parameters.length;
-            parameterCount = hasVariadic ? undefined : info.parameters.length;
-            const types: string[] = [];
-            let optionalCount = 0;
-            for (const p of info.parameters) {
-              if (p.type !== null) types.push(p.type);
-              if (p.isOptional) optionalCount++;
-            }
-            parameterTypes = types.length > 0 ? types : undefined;
-            requiredParameterCount =
-              !hasVariadic && optionalCount > 0
-                ? info.parameters.length - optionalCount
-                : undefined;
-            returnType = info.returnType ?? undefined;
-            visibility = info.visibility;
-            isStatic = info.isStatic;
-            isAbstract = info.isAbstract;
-            isFinal = info.isFinal;
-            if (info.isVirtual) isVirtual = info.isVirtual;
-            if (info.isOverride) isOverride = info.isOverride;
-            if (info.isAsync) isAsync = info.isAsync;
-            if (info.isPartial) isPartial = info.isPartial;
-            if (info.annotations.length > 0) annotations = info.annotations;
+            arityForId = arityForIdFromInfo(info);
+            methodProps = buildMethodProps(info);
           }
         }
       }
@@ -2016,9 +1921,9 @@ const processFileGroup = (
             const info = fieldMap?.get(nodeName);
             if (info) {
               declaredType = info.type ?? undefined;
-              visibility = info.visibility;
-              isStatic = info.isStatic;
-              isReadonly = info.isReadonly;
+              methodProps.visibility = info.visibility;
+              methodProps.isStatic = info.isStatic;
+              methodProps.isReadonly = info.isReadonly;
             }
           }
         }
@@ -2044,21 +1949,8 @@ const processFileGroup = (
               }
             : {}),
           ...(description !== undefined ? { description } : {}),
-          ...(parameterCount !== undefined ? { parameterCount } : {}),
-          ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
-          ...(parameterTypes !== undefined ? { parameterTypes } : {}),
-          ...(returnType !== undefined ? { returnType } : {}),
+          ...methodProps,
           ...(declaredType !== undefined ? { declaredType } : {}),
-          ...(visibility !== undefined ? { visibility } : {}),
-          ...(isStatic !== undefined ? { isStatic } : {}),
-          ...(isReadonly !== undefined ? { isReadonly } : {}),
-          ...(isAbstract !== undefined ? { isAbstract } : {}),
-          ...(isFinal !== undefined ? { isFinal } : {}),
-          ...(isVirtual !== undefined ? { isVirtual } : {}),
-          ...(isOverride !== undefined ? { isOverride } : {}),
-          ...(isAsync !== undefined ? { isAsync } : {}),
-          ...(isPartial !== undefined ? { isPartial } : {}),
-          ...(annotations !== undefined ? { annotations } : {}),
         },
       });
 
@@ -2069,22 +1961,30 @@ const processFileGroup = (
         name: nodeName,
         nodeId,
         type: nodeLabel,
-        ...(parameterCount !== undefined ? { parameterCount } : {}),
-        ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
-        ...(parameterTypes !== undefined ? { parameterTypes } : {}),
-        ...(returnType !== undefined ? { returnType } : {}),
+        parameterCount: methodProps.parameterCount as number | undefined,
+        requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
+        parameterTypes: methodProps.parameterTypes as string[] | undefined,
+        returnType: methodProps.returnType as string | undefined,
         ...(declaredType !== undefined ? { declaredType } : {}),
         ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
-        ...(visibility !== undefined ? { visibility } : {}),
-        ...(isStatic !== undefined ? { isStatic } : {}),
-        ...(isReadonly !== undefined ? { isReadonly } : {}),
-        ...(isAbstract !== undefined ? { isAbstract } : {}),
-        ...(isFinal !== undefined ? { isFinal } : {}),
-        ...(isVirtual !== undefined ? { isVirtual } : {}),
-        ...(isOverride !== undefined ? { isOverride } : {}),
-        ...(isAsync !== undefined ? { isAsync } : {}),
-        ...(isPartial !== undefined ? { isPartial } : {}),
-        ...(annotations !== undefined ? { annotations } : {}),
+        visibility: methodProps.visibility as string | undefined,
+        isStatic: methodProps.isStatic as boolean | undefined,
+        isReadonly: methodProps.isReadonly as boolean | undefined,
+        isAbstract: methodProps.isAbstract as boolean | undefined,
+        isFinal: methodProps.isFinal as boolean | undefined,
+        ...(methodProps.isVirtual !== undefined
+          ? { isVirtual: methodProps.isVirtual as boolean }
+          : {}),
+        ...(methodProps.isOverride !== undefined
+          ? { isOverride: methodProps.isOverride as boolean }
+          : {}),
+        ...(methodProps.isAsync !== undefined ? { isAsync: methodProps.isAsync as boolean } : {}),
+        ...(methodProps.isPartial !== undefined
+          ? { isPartial: methodProps.isPartial as boolean }
+          : {}),
+        ...(methodProps.annotations !== undefined
+          ? { annotations: methodProps.annotations as string[] }
+          : {}),
       });
 
       const fileId = generateId('File', file.path);
