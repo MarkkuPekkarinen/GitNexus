@@ -37,8 +37,8 @@ function resolveGitnexusBin(): string | null {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
     })
-      .trim()
-      .split('\n')[0];
+      .split('\n')[0]
+      .trim();
     return resolved || null;
   } catch {
     return null;
