@@ -1,4 +1,5 @@
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { BindingAccumulator } from './binding-accumulator.js';
 import { processStructure } from './structure-processor.js';
 import { processMarkdown } from './markdown-processor.js';
 import { processCobol, isCobolFile, isJclFile } from './cobol-processor.js';
@@ -650,6 +651,7 @@ async function runChunkedParseAndResolve(
   allDecoratorRoutes: ExtractedDecoratorRoute[];
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
+  bindingAccumulator: BindingAccumulator;
 }> {
   const symbolTable = ctx.symbols;
 
@@ -782,7 +784,7 @@ async function runChunkedParseAndResolve(
   // Phase 14: Collect exported type bindings for cross-file propagation
   const exportedTypeMap: ExportedTypeMap = new Map();
   // Accumulate file-scope TypeEnv bindings from workers (closes worker/sequential quality gap)
-  const workerTypeEnvBindings: { filePath: string; bindings: [string, string][] }[] = [];
+  const bindingAccumulator = new BindingAccumulator();
   // Accumulate fetch() calls from workers for Next.js route matching
   const allFetchCalls: ExtractedFetchCall[] = [];
   // Accumulate framework-extracted routes (Laravel, etc.) for Route node creation
@@ -916,9 +918,18 @@ async function runChunkedParseAndResolve(
             });
           }),
         ]);
-        // Collect TypeEnv file-scope bindings for exported type enrichment
-        if (chunkWorkerData.typeEnvBindings?.length) {
-          for (const _item of chunkWorkerData.typeEnvBindings) workerTypeEnvBindings.push(_item);
+        // Collect all-scope bindings into BindingAccumulator
+        if (chunkWorkerData.allScopeBindings?.length) {
+          for (const { filePath, bindings } of chunkWorkerData.allScopeBindings) {
+            const entries = bindings.map(([scope, varName, typeName]) => ({ scope, varName, typeName }));
+            bindingAccumulator.appendFile(filePath, entries);
+          }
+        } else if (chunkWorkerData.typeEnvBindings?.length) {
+          // Fallback: old-style file-scope-only bindings (backward compat)
+          for (const { filePath, bindings } of chunkWorkerData.typeEnvBindings) {
+            const entries = bindings.map(([varName, typeName]) => ({ scope: '', varName, typeName }));
+            bindingAccumulator.appendFile(filePath, entries);
+          }
         }
         // Collect fetch() calls for Next.js route matching
         if (chunkWorkerData.fetchCalls?.length) {
@@ -1068,14 +1079,11 @@ async function runChunkedParseAndResolve(
     );
   }
 
-  // ── Worker path quality enrichment: merge TypeEnv file-scope bindings into ExportedTypeMap ──
-  // Workers return file-scope bindings from their TypeEnv fixpoint (includes inferred types
-  // like `const config = getConfig()` → Config). Filter by graph isExported to match
-  // the sequential path's collectExportedBindings behavior.
-  if (workerTypeEnvBindings.length > 0) {
+  // ── Worker path quality enrichment: merge file-scope bindings into ExportedTypeMap ──
+  if (bindingAccumulator.fileCount > 0) {
     let enriched = 0;
-    for (const { filePath, bindings } of workerTypeEnvBindings) {
-      for (const [name, type] of bindings) {
+    for (const filePath of bindingAccumulator.files()) {
+      for (const [name, type] of bindingAccumulator.fileScopeEntries(filePath)) {
         // Verify the symbol is exported via graph node
         const nodeId = `Function:${filePath}:${name}`;
         const varNodeId = `Variable:${filePath}:${name}`;
@@ -1128,6 +1136,7 @@ async function runChunkedParseAndResolve(
     allDecoratorRoutes,
     allToolDefs,
     allORMQueries,
+    bindingAccumulator,
   };
 }
 
@@ -1375,6 +1384,7 @@ export const runPipelineFromRepo = async (
       allDecoratorRoutes,
       allToolDefs,
       allORMQueries,
+      bindingAccumulator,
     } = await runChunkedParseAndResolve(
       graph,
       ctx,
@@ -1695,6 +1705,16 @@ export const runPipelineFromRepo = async (
     // ── Phase 3.7: ORM Dataflow Detection (Prisma + Supabase) ──────────
     if (allORMQueries.length > 0) {
       processORMQueries(graph, allORMQueries, isDev);
+    }
+
+    // Finalize — no more appends allowed
+    bindingAccumulator.finalize();
+
+    if (isDev && bindingAccumulator.totalBindings > 0) {
+      const memKB = Math.round(bindingAccumulator.estimateMemoryBytes() / 1024);
+      console.log(
+        `📦 BindingAccumulator: ${bindingAccumulator.totalBindings} bindings across ${bindingAccumulator.fileCount} files (~${memKB} KB)`,
+      );
     }
 
     // ── Phase 14: Cross-file binding propagation (topological level sort) ──

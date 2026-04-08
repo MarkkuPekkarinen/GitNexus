@@ -43,6 +43,7 @@ import type {
   ExtractedToolDef,
   FileConstructorBindings,
   FileTypeEnvBindings,
+  FileAllScopeBindings,
   ExtractedORMQuery,
 } from './workers/parse-worker.js';
 import { getTreeSitterBufferSize, TREE_SITTER_MAX_BUFFER } from './constants.js';
@@ -61,6 +62,7 @@ export interface WorkerExtractedData {
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
   typeEnvBindings: FileTypeEnvBindings[];
+  allScopeBindings: FileAllScopeBindings[];
 }
 
 // ============================================================================
@@ -95,6 +97,7 @@ const processParsingWithWorkers = async (
       ormQueries: [],
       constructorBindings: [],
       typeEnvBindings: [],
+      allScopeBindings: [],
     };
 
   const total = files.length;
@@ -119,6 +122,7 @@ const processParsingWithWorkers = async (
   const allORMQueries: ExtractedORMQuery[] = [];
   const allConstructorBindings: FileConstructorBindings[] = [];
   const allTypeEnvBindings: FileTypeEnvBindings[] = [];
+  const allAllScopeBindings: FileAllScopeBindings[] = [];
   for (const result of chunkResults) {
     for (const node of result.nodes) {
       graph.addNode({
@@ -155,6 +159,7 @@ const processParsingWithWorkers = async (
     if (result.ormQueries) for (const _item of result.ormQueries) allORMQueries.push(_item);
     for (const _item of result.constructorBindings) allConstructorBindings.push(_item);
     for (const _item of result.typeEnvBindings) allTypeEnvBindings.push(_item);
+    if (result.allScopeBindings) for (const _item of result.allScopeBindings) allAllScopeBindings.push(_item);
   }
 
   // Merge and log skipped languages from workers
@@ -185,6 +190,7 @@ const processParsingWithWorkers = async (
     ormQueries: allORMQueries,
     constructorBindings: allConstructorBindings,
     typeEnvBindings: allTypeEnvBindings,
+    allScopeBindings: allAllScopeBindings,
   };
 };
 
