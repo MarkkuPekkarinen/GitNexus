@@ -928,16 +928,6 @@ async function runChunkedParseAndResolve(
             }));
             bindingAccumulator.appendFile(filePath, entries);
           }
-        } else if (chunkWorkerData.typeEnvBindings?.length) {
-          // Fallback: old-style file-scope-only bindings (backward compat)
-          for (const { filePath, bindings } of chunkWorkerData.typeEnvBindings) {
-            const entries = bindings.map(([varName, typeName]) => ({
-              scope: '',
-              varName,
-              typeName,
-            }));
-            bindingAccumulator.appendFile(filePath, entries);
-          }
         }
         // Collect fetch() calls for Next.js route matching
         if (chunkWorkerData.fetchCalls?.length) {

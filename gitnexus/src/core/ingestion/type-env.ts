@@ -74,8 +74,9 @@ export interface TypeEnvironment {
    *  Populated when a variable has BOTH a declared base type AND a more specific
    *  constructor type (e.g., `Animal a = new Dog()` → key maps to 'Dog'). */
   readonly constructorTypeMap: ReadonlyMap<string, string>;
-  /** Drain all scoped bindings into a BindingAccumulator.
-   *  Called once per file at end of processing. Skips empty scopes. */
+  /** Copy all scoped bindings into a BindingAccumulator.
+   *  Must be called at most once per TypeEnv instance — throws on second call.
+   *  The source `env` is not cleared (TypeEnv is per-file and discarded immediately after). */
   flush(filePath: string, accumulator: BindingAccumulator): void;
 }
 
@@ -826,6 +827,7 @@ export const buildTypeEnv = (
   const parentMap = options?.parentMap;
   const extractFuncNameHook = options?.extractFunctionName;
   const env: TypeEnv = new Map();
+  let flushed = false;
   const patternOverrides: PatternOverrides = new Map();
   // Phase P: maps `scope\0varName` → constructor type when a declaration has BOTH
   // a base type annotation AND a more specific constructor initializer.
@@ -1250,6 +1252,10 @@ export const buildTypeEnv = (
     allScopes: () => env as ReadonlyMap<string, ReadonlyMap<string, string>>,
     constructorTypeMap,
     flush(filePath: string, accumulator: BindingAccumulator): void {
+      if (flushed) {
+        throw new Error(`TypeEnv.flush called twice for ${filePath} — flush is single-use`);
+      }
+      flushed = true;
       const entries: BindingEntry[] = [];
       for (const [scope, scopeMap] of env) {
         for (const [varName, typeName] of scopeMap) {

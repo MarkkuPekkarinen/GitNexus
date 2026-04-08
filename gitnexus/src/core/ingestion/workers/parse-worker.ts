@@ -235,15 +235,9 @@ export interface FileConstructorBindings {
   bindings: ConstructorBinding[];
 }
 
-/** File-scope type bindings from TypeEnv fixpoint — used for cross-file ExportedTypeMap. */
-export interface FileTypeEnvBindings {
-  filePath: string;
-  /** [varName, typeName] pairs from file scope (scope = '') */
-  bindings: [string, string][];
-}
-
 /** All-scope type bindings from TypeEnv — includes function-local scopes.
- *  Used by BindingAccumulator for cross-file type propagation (Phase 9+). */
+ *  Used by BindingAccumulator for cross-file type propagation (Phase 9+).
+ *  File-scope entries (scope = '') are included as a subset. */
 export interface FileAllScopeBindings {
   filePath: string;
   /** [scope, varName, typeName] triples from all scopes. */
@@ -264,8 +258,6 @@ export interface ParseWorkerResult {
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
-  /** File-scope type bindings from TypeEnv fixpoint for exported symbol collection. */
-  typeEnvBindings: FileTypeEnvBindings[];
   /** All-scope type bindings from TypeEnv for BindingAccumulator (includes function-local). */
   allScopeBindings: FileAllScopeBindings[];
   skippedLanguages: Record<string, number>;
@@ -700,7 +692,6 @@ const processBatch = (
     toolDefs: [],
     ormQueries: [],
     constructorBindings: [],
-    typeEnvBindings: [],
     allScopeBindings: [],
     skippedLanguages: {},
     fileCount: 0,
@@ -1397,17 +1388,8 @@ const processFileGroup = (
       });
     }
 
-    // Extract file-scope bindings for ExportedTypeMap (closes worker/sequential quality gap).
-    // Sequential path uses collectExportedBindings(typeEnv) directly; worker path serializes
-    // these bindings so the main thread can merge them into ExportedTypeMap.
-    const fileScope = typeEnv.fileScope();
-    if (fileScope.size > 0) {
-      const bindings: [string, string][] = [];
-      for (const [name, type] of fileScope) bindings.push([name, type]);
-      result.typeEnvBindings.push({ filePath: file.path, bindings });
-    }
-
-    // Serialize all scopes for BindingAccumulator (Phase 9+ cross-file propagation)
+    // Serialize all scopes for BindingAccumulator (file-scope entries are included
+    // with scope = '' and consumed by ExportedTypeMap enrichment in pipeline.ts).
     const allScopes = typeEnv.allScopes();
     if (allScopes.size > 0) {
       const scopeBindings: [string, string, string][] = [];
@@ -1416,9 +1398,7 @@ const processFileGroup = (
           scopeBindings.push([scope, varName, typeName]);
         }
       }
-      if (scopeBindings.length > 0) {
-        result.allScopeBindings.push({ filePath: file.path, bindings: scopeBindings });
-      }
+      result.allScopeBindings.push({ filePath: file.path, bindings: scopeBindings });
     }
 
     // Per-file map: decorator end-line → decorator info, for associating with definitions
@@ -2138,7 +2118,6 @@ let accumulated: ParseWorkerResult = {
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
-  typeEnvBindings: [],
   allScopeBindings: [],
   skippedLanguages: {},
   fileCount: 0,
@@ -2159,7 +2138,6 @@ const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
   target.toolDefs.push(...src.toolDefs);
   target.ormQueries.push(...src.ormQueries);
   target.constructorBindings.push(...src.constructorBindings);
-  target.typeEnvBindings.push(...src.typeEnvBindings);
   target.allScopeBindings.push(...src.allScopeBindings);
   for (const [lang, count] of Object.entries(src.skippedLanguages)) {
     target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
@@ -2211,7 +2189,6 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         toolDefs: [],
         ormQueries: [],
         constructorBindings: [],
-        typeEnvBindings: [],
         allScopeBindings: [],
         skippedLanguages: {},
         fileCount: 0,

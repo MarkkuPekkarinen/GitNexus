@@ -89,9 +89,14 @@ export class BindingAccumulator {
   }
 
   /**
-   * Rough memory estimate in bytes.
+   * Rough memory estimate in bytes (intentionally pessimistic).
    * Formula: sum of (ENTRY_OVERHEAD + char bytes of scope+varName+typeName) per entry
    *          + MAP_ENTRY_OVERHEAD + char bytes of filePath per file.
+   *
+   * Note: V8 stores all-ASCII strings as Latin-1 (1 byte/char) and only upgrades
+   * to UCS-2 (2 bytes/char) for non-Latin-1 code points. Source paths and type names
+   * are typically all-ASCII, so actual heap cost is roughly half what this returns.
+   * The pessimistic factor is intentional — better to over-budget than under-budget.
    */
   estimateMemoryBytes(): number {
     let total = 0;

@@ -5921,5 +5921,15 @@ function process() {
       expect(acc.getFile('/src/a.ts')).toBeDefined();
       expect(acc.getFile('/src/b.ts')).toBeDefined();
     });
+
+    it('throws on second flush of the same TypeEnv (single-use)', () => {
+      const code = `const x: X = makeX();`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const acc = new BindingAccumulator();
+
+      typeEnv.flush('/src/a.ts', acc);
+      expect(() => typeEnv.flush('/src/a.ts', acc)).toThrow(/single-use/);
+    });
   });
 });
