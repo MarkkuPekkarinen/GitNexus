@@ -32,6 +32,7 @@ import { buildTypeEnv, isSubclassOf } from './type-env.js';
 import type { ConstructorBinding, TypeEnvironment } from './type-env.js';
 import type { HeritageMap } from './heritage-map.js';
 import { c3Linearize } from './mro-processor.js';
+import type { BindingAccumulator } from './binding-accumulator.js';
 import { getTreeSitterBufferSize } from './constants.js';
 import type {
   ExtractedCall,
@@ -567,6 +568,7 @@ export const processCalls = async (
   /** Phase 14 E3: cross-file RAW return types for for-loop element extraction. Keyed by filePath → Map<calleeName, rawReturnType>. */
   importedRawReturnTypesMap?: ReadonlyMap<string, ReadonlyMap<string, string>>,
   heritageMap?: HeritageMap,
+  bindingAccumulator?: BindingAccumulator,
 ): Promise<ExtractedHeritage[]> => {
   const parser = await loadParser();
   const collectedHeritage: ExtractedHeritage[] = [];
@@ -687,6 +689,10 @@ export const processCalls = async (
     if (typeEnv && exportedTypeMap) {
       const fileExports = collectExportedBindings(typeEnv, file.path, ctx.symbols, graph);
       if (fileExports) exportedTypeMap.set(file.path, fileExports);
+    }
+    // Flush all scopes into accumulator for Phase 9+ cross-file propagation
+    if (bindingAccumulator) {
+      typeEnv.flush(file.path, bindingAccumulator);
     }
     const callRouter = provider.callRouter;
 

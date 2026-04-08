@@ -921,13 +921,21 @@ async function runChunkedParseAndResolve(
         // Collect all-scope bindings into BindingAccumulator
         if (chunkWorkerData.allScopeBindings?.length) {
           for (const { filePath, bindings } of chunkWorkerData.allScopeBindings) {
-            const entries = bindings.map(([scope, varName, typeName]) => ({ scope, varName, typeName }));
+            const entries = bindings.map(([scope, varName, typeName]) => ({
+              scope,
+              varName,
+              typeName,
+            }));
             bindingAccumulator.appendFile(filePath, entries);
           }
         } else if (chunkWorkerData.typeEnvBindings?.length) {
           // Fallback: old-style file-scope-only bindings (backward compat)
           for (const { filePath, bindings } of chunkWorkerData.typeEnvBindings) {
-            const entries = bindings.map(([varName, typeName]) => ({ scope: '', varName, typeName }));
+            const entries = bindings.map(([varName, typeName]) => ({
+              scope: '',
+              varName,
+              typeName,
+            }));
             bindingAccumulator.appendFile(filePath, entries);
           }
         }
@@ -1045,6 +1053,7 @@ async function runChunkedParseAndResolve(
       undefined,
       undefined,
       sequentialHeritageMap,
+      bindingAccumulator,
     );
     await processHeritage(graph, chunkFiles, astCache, ctx);
     if (rubyHeritage.length > 0) {
