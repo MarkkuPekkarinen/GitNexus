@@ -1256,11 +1256,29 @@ export const buildTypeEnv = (
         throw new Error(`TypeEnv.flush called twice for ${filePath} — flush is single-use`);
       }
       flushed = true;
+      // PR #743 Codex adversarial review follow-up (plan 2026-04-09-005):
+      // Narrow flush() to iterate only the FILE_SCOPE entry, mirroring the
+      // worker-path narrowing in parse-worker.ts (commit 803631fe). Before
+      // this change, both execution paths had the same asymmetry bug: the
+      // worker path was fixed but the sequential path (this code) still
+      // wrote function-scope entries into long-lived accumulator storage
+      // that no consumer reads until Phase 9 lands.
+      //
+      // Phase 9 reversion: when a downstream consumer of function-scope
+      // bindings exists, restore the nested iteration:
+      //
+      //   for (const [scope, scopeMap] of env) {
+      //     for (const [varName, typeName] of scopeMap) {
+      //       entries.push({ scope, varName, typeName });
+      //     }
+      //   }
+      //
+      // See BindingAccumulator class JSDoc and FileAllScopeBindings JSDoc in
+      // parse-worker.ts for the full reversion checklist.
+      const fileScope = env.get(FILE_SCOPE) ?? EMPTY_FILE_SCOPE;
       const entries: BindingEntry[] = [];
-      for (const [scope, scopeMap] of env) {
-        for (const [varName, typeName] of scopeMap) {
-          entries.push({ scope, varName, typeName });
-        }
+      for (const [varName, typeName] of fileScope) {
+        entries.push({ scope: '', varName, typeName });
       }
       if (entries.length > 0) {
         accumulator.appendFile(filePath, entries);

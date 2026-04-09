@@ -1721,6 +1721,17 @@ export const runPipelineFromRepo = async (
       );
     }
 
+    // PR #743 Codex adversarial review follow-up (plan 2026-04-09-005):
+    // Release the accumulator's heap footprint now. The ExportedTypeMap
+    // enrichment loop above is the only current consumer, and the dev
+    // telemetry log just captured peak state. Phase 14 and
+    // runGraphAnalysisPhases do not read the accumulator today — keeping
+    // it alive through those long-running phases pins heap for no reason.
+    // When Phase 9 wires a consumer into runCrossFileBindingPropagation,
+    // move this dispose() call to after that consumer completes or delete
+    // it entirely if the consumer takes lifecycle ownership.
+    bindingAccumulator.dispose();
+
     // ── Phase 14: Cross-file binding propagation (topological level sort) ──
     await runCrossFileBindingPropagation(
       graph,

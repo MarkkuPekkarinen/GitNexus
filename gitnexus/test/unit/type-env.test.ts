@@ -5878,7 +5878,14 @@ function process() {
       expect(userEntry!.scope).toBe('');
     });
 
-    it('flushes function-scoped bindings into accumulator', () => {
+    // PR #743 Codex adversarial review follow-up (plan 2026-04-09-005):
+    // flush() was narrowed to file-scope-only to match the worker-path
+    // narrowing in commit 803631fe. Function-scope entries are dropped at
+    // the flush seam and never reach the accumulator until a Phase 9
+    // consumer lands. This test was previously the positive assertion that
+    // function-scope entries DID land in the accumulator; it is now a
+    // negative assertion guarding the narrowing.
+    it('does NOT flush function-scoped bindings into accumulator (narrowed per PR #743 Codex review)', () => {
       const code = `function process() {\n  const result: Response = fetch();\n}`;
       const tree = parse(code, TypeScript.typescript);
       const typeEnv = buildTypeEnv(tree, 'typescript');
@@ -5886,12 +5893,37 @@ function process() {
 
       typeEnv.flush('/src/test.ts', acc);
 
+      // With only a function-scope binding (`result` inside `process()`) and
+      // no file-scope bindings, the accumulator should have nothing for this
+      // file — the function-scope entry is dropped at the flush boundary.
       const entries = acc.getFile('/src/test.ts');
+      expect(entries).toBeUndefined();
+      expect(acc.fileCount).toBe(0);
+      expect(acc.totalBindings).toBe(0);
+    });
+
+    it('narrows mixed file-scope and function-scope env to file-scope only', () => {
+      // Core narrowing assertion: a realistic file with BOTH file-scope and
+      // function-scope bindings flushes only the file-scope subset. This is
+      // the R1 red/green signal for plan 2026-04-09-005.
+      const code = `const dbClient: Database = connectDb();\nfunction handleRequest() {\n  const localRequest: Request = parseRequest();\n  const localUser: User = loadUser();\n}`;
+      const tree = parse(code, TypeScript.typescript);
+      const typeEnv = buildTypeEnv(tree, 'typescript');
+      const acc = new BindingAccumulator();
+
+      typeEnv.flush('/src/service.ts', acc);
+
+      const entries = acc.getFile('/src/service.ts');
       expect(entries).toBeDefined();
-      const resultEntry = entries!.find((e) => e.varName === 'result');
-      expect(resultEntry).toBeDefined();
-      expect(resultEntry!.typeName).toBe('Response');
-      expect(resultEntry!.scope).not.toBe('');
+      // Exactly one entry: the file-scope `dbClient`. The two function-scope
+      // entries (`localRequest`, `localUser`) are dropped.
+      expect(entries).toHaveLength(1);
+      expect(entries![0].scope).toBe('');
+      expect(entries![0].varName).toBe('dbClient');
+      expect(entries![0].typeName).toBe('Database');
+      // Function-scope entries are absent from the accumulator.
+      expect(entries!.find((e) => e.varName === 'localRequest')).toBeUndefined();
+      expect(entries!.find((e) => e.varName === 'localUser')).toBeUndefined();
     });
 
     it('flushes nothing for an empty TypeEnv', () => {

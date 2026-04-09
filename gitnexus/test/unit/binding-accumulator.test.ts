@@ -498,4 +498,95 @@ describe('BindingAccumulator', () => {
       expect(exportedTypeMap.has('src/missing.ts')).toBe(false);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // PR #743 Codex adversarial review follow-up (plan 2026-04-09-005):
+  // BindingAccumulator.dispose() releases the accumulator's heap footprint
+  // after the enrichment loop has consumed everything it needs. Post-dispose
+  // reads return empty/undefined without throwing, matching "never-appended"
+  // state. Idempotent and orthogonal to finalize().
+  // -------------------------------------------------------------------------
+
+  describe('dispose', () => {
+    it('empties all read methods after dispose', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/a.ts', [
+        { scope: '', varName: 'x', typeName: 'X' },
+        { scope: 'fn@10', varName: 'y', typeName: 'Y' },
+      ]);
+      acc.appendFile('src/b.ts', [{ scope: '', varName: 'z', typeName: 'Z' }]);
+
+      // Sanity: pre-dispose state is populated.
+      expect(acc.fileCount).toBe(2);
+      expect(acc.totalBindings).toBe(3);
+
+      acc.dispose();
+
+      // Post-dispose state: all read methods return empty/undefined.
+      expect(acc.fileCount).toBe(0);
+      expect(acc.totalBindings).toBe(0);
+      expect([...acc.files()]).toEqual([]);
+      expect(acc.getFile('src/a.ts')).toBeUndefined();
+      expect(acc.getFile('src/b.ts')).toBeUndefined();
+      expect(acc.fileScopeEntries('src/a.ts')).toEqual([]);
+      expect(acc.fileScopeEntries('src/b.ts')).toEqual([]);
+    });
+
+    it('is idempotent — calling twice is a no-op', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/a.ts', [{ scope: '', varName: 'x', typeName: 'X' }]);
+      acc.dispose();
+      expect(() => acc.dispose()).not.toThrow();
+      expect(acc.fileCount).toBe(0);
+      expect(acc.totalBindings).toBe(0);
+    });
+
+    it('works before finalize() — accumulator behaves like a fresh one after dispose', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/a.ts', [{ scope: '', varName: 'x', typeName: 'X' }]);
+      acc.dispose();
+      // Not finalized, so appends still work post-dispose.
+      expect(() =>
+        acc.appendFile('src/b.ts', [{ scope: '', varName: 'y', typeName: 'Y' }]),
+      ).not.toThrow();
+      expect(acc.fileCount).toBe(1);
+      expect(acc.totalBindings).toBe(1);
+      expect(acc.getFile('src/b.ts')).toHaveLength(1);
+      expect(acc.getFile('src/a.ts')).toBeUndefined();
+    });
+
+    it('works after finalize() — append still throws, reads return empty', () => {
+      const acc = new BindingAccumulator();
+      acc.appendFile('src/a.ts', [{ scope: '', varName: 'x', typeName: 'X' }]);
+      acc.finalize();
+      acc.dispose();
+      // Finalized, so appends throw even post-dispose.
+      expect(() =>
+        acc.appendFile('src/b.ts', [{ scope: '', varName: 'y', typeName: 'Y' }]),
+      ).toThrow(/finalized/);
+      // But reads return empty.
+      expect(acc.fileCount).toBe(0);
+      expect(acc.totalBindings).toBe(0);
+      expect(acc.getFile('src/a.ts')).toBeUndefined();
+    });
+
+    it('estimateMemoryBytes drops to zero after dispose', () => {
+      const acc = new BindingAccumulator();
+      // Populate a large batch to give the estimate a non-trivial baseline.
+      for (let i = 0; i < 100; i++) {
+        acc.appendFile(`src/file${i}.ts`, [
+          { scope: '', varName: `var${i}a`, typeName: 'string' },
+          { scope: '', varName: `var${i}b`, typeName: 'number' },
+        ]);
+      }
+      const preDisposeBytes = acc.estimateMemoryBytes();
+      expect(preDisposeBytes).toBeGreaterThan(0);
+
+      acc.dispose();
+
+      // After dispose, the iteration over `_allByFile` in estimateMemoryBytes
+      // has zero files to walk, so the returned value is exactly 0.
+      expect(acc.estimateMemoryBytes()).toBe(0);
+    });
+  });
 });

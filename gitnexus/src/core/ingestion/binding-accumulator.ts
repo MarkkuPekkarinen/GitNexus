@@ -60,6 +60,7 @@ export class BindingAccumulator {
   private readonly _fileScopeByFile = new Map<string, [string, string][]>();
   private _totalBindings = 0;
   private _finalized = false;
+  private _disposed = false;
 
   /**
    * Append bindings for a file. Safe to call multiple times for the same file.
@@ -98,6 +99,40 @@ export class BindingAccumulator {
   /** Lock the accumulator — no further appends. Idempotent. */
   finalize(): void {
     this._finalized = true;
+  }
+
+  /**
+   * Release the accumulator's heap footprint. Clears both internal storage
+   * maps and resets `_totalBindings` to zero. Idempotent and orthogonal to
+   * `finalize()` — calling `dispose()` does not change the finalized state.
+   *
+   * Post-dispose contract: all read methods return empty/undefined state
+   * matching a never-appended-to accumulator. Specifically:
+   *   - `fileCount === 0`
+   *   - `totalBindings === 0`
+   *   - `files()` yields an empty iterator
+   *   - `getFile(x)` returns `undefined` for all `x`
+   *   - `fileScopeEntries(x)` returns `[]` for all `x`
+   *   - `estimateMemoryBytes()` returns `0`
+   *
+   * If `dispose()` is called **before** `finalize()`, subsequent `appendFile`
+   * calls succeed — the accumulator behaves like a fresh one. If called
+   * **after** `finalize()`, subsequent `appendFile` calls throw the existing
+   * "finalized" error.
+   *
+   * Added in response to PR #743 Codex adversarial review (plan
+   * 2026-04-09-005): the pipeline disposes the accumulator after the
+   * ExportedTypeMap enrichment loop consumes its file-scope entries, so
+   * the heap is released before Phase 14 (`runCrossFileBindingPropagation`)
+   * and `runGraphAnalysisPhases` begin their long-running work. When Phase 9
+   * wires a consumer into that stage, the dispose call should move later in
+   * the pipeline or be removed entirely.
+   */
+  dispose(): void {
+    this._allByFile.clear();
+    this._fileScopeByFile.clear();
+    this._totalBindings = 0;
+    this._disposed = true;
   }
 
   /** Get all bindings for a file, or undefined if the file is unknown. */
