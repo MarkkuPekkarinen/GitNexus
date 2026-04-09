@@ -512,6 +512,7 @@ const verifyConstructorBindings = (
   filePath: string,
   ctx: ResolutionContext,
   graph?: KnowledgeGraph,
+  bindingAccumulator?: BindingAccumulator,
 ): Map<string, string> => {
   const verified = new Map<string, string>();
 
@@ -548,11 +549,34 @@ const verifyConstructorBindings = (
         }
       }
 
+      let typeName: string | undefined;
       if (callableDefs && callableDefs.length === 1 && callableDefs[0].returnType) {
-        const typeName = extractReturnTypeName(callableDefs[0].returnType);
-        if (typeName) {
-          verified.set(receiverKey(scope, varName), typeName);
+        typeName = extractReturnTypeName(callableDefs[0].returnType);
+      }
+
+      // Phase 9: BindingAccumulator fallback for cross-file return types.
+      // Used when the SymbolTable has no return type for a cross-file callee
+      // (e.g., a return type that TypeEnv resolved via fixpoint in the source
+      // file but was not stored as a SymbolTable returnType annotation).
+      // namedImportMap tells us which source file exported the callee so we
+      // can look up its file-scope binding directly in the accumulator.
+      if (!typeName && bindingAccumulator) {
+        const namedImports = ctx.namedImportMap.get(filePath);
+        const importBinding = namedImports?.get(calleeName);
+        if (importBinding) {
+          for (const [name, rawType] of bindingAccumulator.fileScopeEntries(
+            importBinding.sourcePath,
+          )) {
+            if (name === importBinding.exportedName) {
+              typeName = extractReturnTypeName(rawType);
+              break;
+            }
+          }
         }
+      }
+
+      if (typeName) {
+        verified.set(receiverKey(scope, varName), typeName);
       }
     }
   }
@@ -2474,6 +2498,12 @@ const walkMixedChain = (
 /**
  * Fast path: resolve pre-extracted call sites from workers.
  * No AST parsing — workers already extracted calledName + sourceId.
+ *
+ * @param bindingAccumulator  Phase 9: optional accumulator carrying file-scope
+ *   TypeEnv bindings from all worker-processed files. When the SymbolTable has
+ *   no return type for a cross-file callee, `verifyConstructorBindings` falls
+ *   back to the accumulator via `namedImportMap` to bind the variable to the
+ *   callee's resolved type (e.g. `var x = getUser()` → `x: User`).
  */
 export const processCallsFromExtracted = async (
   graph: KnowledgeGraph,
@@ -2482,6 +2512,7 @@ export const processCallsFromExtracted = async (
   onProgress?: (current: number, total: number) => void,
   constructorBindings?: FileConstructorBindings[],
   heritageMap?: HeritageMap,
+  bindingAccumulator?: BindingAccumulator,
 ) => {
   // Scope-aware receiver types: keyed by filePath → "funcName\0varName" → typeName.
   // The scope dimension prevents collisions when two functions in the same file
@@ -2489,7 +2520,13 @@ export const processCallsFromExtracted = async (
   const fileReceiverTypes = new Map<string, ReceiverTypeIndex>();
   if (constructorBindings) {
     for (const { filePath, bindings } of constructorBindings) {
-      const verified = verifyConstructorBindings(bindings, filePath, ctx, graph);
+      const verified = verifyConstructorBindings(
+        bindings,
+        filePath,
+        ctx,
+        graph,
+        bindingAccumulator,
+      );
       if (verified.size > 0) {
         fileReceiverTypes.set(filePath, buildReceiverTypeIndex(verified));
       }

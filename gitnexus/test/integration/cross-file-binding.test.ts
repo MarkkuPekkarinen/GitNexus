@@ -210,3 +210,173 @@ describe('Cross-File Binding Propagation: TypeScript circular imports', () => {
     expect(paths.some((p) => p.includes('b.ts') && p.includes('a.ts'))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SM-15 / Phase 9: Cross-file call-result variable binding — multi-language
+//
+// Each suite below loads a multi-file fixture where:
+//   - File A defines a factory function getUser() / get_user() → User
+//   - File B imports that function, calls `u = getUser()`, then calls u.save()
+//
+// The acceptance criteria: u.save() / u.save() / u.get_name() must resolve
+// to the correct User method via cross-file call-result variable binding.
+// These tests cover both the SymbolTable path (languages with explicit return
+// type annotations) and validate that the Phase 9 BindingAccumulator wiring
+// does not break existing behavior.
+// ---------------------------------------------------------------------------
+
+describe('Phase 9 — Cross-File Call-Result Binding: Java', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'java-cross-file'), () => {});
+  }, 60000);
+
+  it('detects User class with save and getName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('getName');
+  });
+
+  it('detects getUser factory and run method', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+
+  it('resolves user.save() in run() to User#save via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves user.getName() in run() to User#getName via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(
+      (c) => c.target === 'getName' && c.source === 'run' && c.targetFilePath.includes('User'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+});
+
+describe('Phase 9 — Cross-File Call-Result Binding: Python', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'py-cross-file'), () => {});
+  }, 60000);
+
+  it('detects User class with save and get_name methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    // Python tree-sitter captures all function_definitions as Function, including methods
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+  });
+
+  it('detects get_user function and run function', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('get_user');
+    expect(getNodesByLabel(result, 'Function')).toContain('run');
+  });
+
+  it('resolves u.save() in run() to User#save via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+
+  it('resolves u.get_name() in run() to User#get_name via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const getNameCall = calls.find(
+      (c) => c.target === 'get_name' && c.source === 'run' && c.targetFilePath.includes('models'),
+    );
+    expect(getNameCall).toBeDefined();
+  });
+});
+
+describe('Phase 9 — Cross-File Call-Result Binding: Go', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'go-cross-file'), () => {});
+  }, 60000);
+
+  it('detects User struct with Save and GetName methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('Save');
+    expect(getNodesByLabel(result, 'Method')).toContain('GetName');
+  });
+
+  it('detects GetUser function and main function', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('GetUser');
+    expect(getNodesByLabel(result, 'Function')).toContain('main');
+  });
+
+  it('resolves user.Save() in main() to User#Save via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'Save' && c.source === 'main' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+describe('Phase 9 — Cross-File Call-Result Binding: Kotlin', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(CROSS_FILE_FIXTURES, 'kotlin-cross-file'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects User class with save and getName methods', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('User');
+    expect(getNodesByLabel(result, 'Method')).toContain('save');
+    expect(getNodesByLabel(result, 'Method')).toContain('getName');
+  });
+
+  it('detects getUser function and run method', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+
+  it('resolves u.save() in run() to User#save via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'run' && c.targetFilePath.includes('User'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});
+
+describe('Phase 9 — Cross-File Call-Result Binding: Rust', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'rs-cross-file'), () => {});
+  }, 60000);
+
+  it('detects User struct with save and get_name methods', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('User');
+    // Rust tree-sitter captures impl fns as Function nodes
+    expect(getNodesByLabel(result, 'Function')).toContain('save');
+    expect(getNodesByLabel(result, 'Function')).toContain('get_name');
+  });
+
+  it('detects get_user function and process function', () => {
+    expect(getNodesByLabel(result, 'Function')).toContain('get_user');
+    expect(getNodesByLabel(result, 'Function')).toContain('process');
+  });
+
+  it('resolves u.save() in process() to User#save via cross-file return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const saveCall = calls.find(
+      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
+    );
+    expect(saveCall).toBeDefined();
+  });
+});

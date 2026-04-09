@@ -14,6 +14,7 @@ import {
   type ResolutionContext,
 } from '../../src/core/ingestion/resolution-context.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { BindingAccumulator } from '../../src/core/ingestion/binding-accumulator.js';
 import type {
   ExtractedCall,
   ExtractedFetchCall,
@@ -568,6 +569,311 @@ describe('processCallsFromExtracted', () => {
     ];
 
     await processCallsFromExtracted(graph, calls, ctx, undefined, constructorBindings);
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  // ---- Phase 9: BindingAccumulator fallback for cross-file return types ----
+
+  it('Phase 9: BindingAccumulator fallback — binds variable to return type when SymbolTable has no returnType', async () => {
+    // getUser is in the SymbolTable but WITHOUT a returnType (e.g., inferred return type
+    // that the structure processor did not capture). The BindingAccumulator for
+    // src/api.ts has getUser → User as a file-scope binding.
+    ctx.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function', {
+      // No returnType provided — simulates a structure-processor gap
+    });
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    // namedImportMap: consumer.ts imports { getUser } from src/api.ts
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    // BindingAccumulator carries the TypeEnv-resolved binding from src/api.ts
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9: BindingAccumulator fallback — SymbolTable return type takes precedence', async () => {
+    // When the SymbolTable DOES have a returnType, the accumulator should not override it.
+    ctx.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function', {
+      returnType: 'User',
+    });
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    // Accumulator has a conflicting (wrong) type — should be ignored
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'WrongType' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Should resolve via SymbolTable (User#save), not the wrong accumulator type
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9: BindingAccumulator fallback — skips when callee not in namedImportMap', async () => {
+    // Callee is not tracked in namedImportMap (e.g. a local function), so accumulator
+    // lookup is skipped. No CALLS edge expected since there is no binding source.
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    // No namedImportMap entry for getUser
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'getUser' }],
+      },
+    ];
+
+    // Use a method name that is owned by User (requires receiver type resolution)
+    // but also exists on multiple types so fuzzy lookup is ambiguous without a
+    // receiver type. Add a second owner so that unconstrained fuzzy lookup won't
+    // match unambiguously.
+    ctx.symbols.add('src/other.ts', 'OtherClass', 'Class:src/other.ts:OtherClass', 'Class');
+    ctx.symbols.add('src/other.ts', 'save', 'Method:src/other.ts:save', 'Method', {
+      ownerId: 'Class:src/other.ts:OtherClass',
+    });
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Without accumulator fallback (no namedImportMap entry), x is untyped.
+    // Two methods named 'save' from unrelated types — fuzzy lookup is ambiguous → no edge.
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
+  it('Phase 9: BindingAccumulator fallback — unwraps Promise<User> type from accumulator', async () => {
+    // Accumulator stores raw type with Promise wrapper — extractReturnTypeName should unwrap it.
+    ctx.symbols.add('src/api.ts', 'fetchUser', 'Function:src/api.ts:fetchUser', 'Function');
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['fetchUser', { sourcePath: 'src/api.ts', exportedName: 'fetchUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    // Accumulator stores raw Promise<User> as type — should be unwrapped
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'fetchUser', typeName: 'Promise<User>' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'fetchUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(1);
+    expect(rels[0].targetId).toBe('Method:src/models.ts:save');
+  });
+
+  it('Phase 9: BindingAccumulator fallback — skips primitive types from accumulator', async () => {
+    // Accumulator stores a primitive type — should not create a CALLS edge.
+    ctx.symbols.add('src/api.ts', 'getCount', 'Function:src/api.ts:getCount', 'Function');
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts']));
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['getCount', { sourcePath: 'src/api.ts', exportedName: 'getCount' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getCount', typeName: 'number' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        bindings: [{ scope: 'main@0', varName: 'count', calleeName: 'getCount' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'toString',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'count',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
+
+    // Primitive type — no CALLS edge
+    const rels = graph.relationships.filter((r) => r.type === 'CALLS');
+    expect(rels).toHaveLength(0);
+  });
+
+  it('Phase 9: BindingAccumulator fallback — handles aliased import (localName ≠ exportedName)', async () => {
+    // import { getUser as fetchUser } from './api' — namedImportMap maps localName to exportedName
+    ctx.symbols.add('src/api.ts', 'getUser', 'Function:src/api.ts:getUser', 'Function');
+    ctx.symbols.add('src/models.ts', 'User', 'Class:src/models.ts:User', 'Class');
+    ctx.symbols.add('src/models.ts', 'save', 'Method:src/models.ts:save', 'Method', {
+      ownerId: 'Class:src/models.ts:User',
+    });
+    ctx.importMap.set('src/consumer.ts', new Set(['src/api.ts', 'src/models.ts']));
+    // Local alias: fetchUser → api.ts:getUser
+    ctx.namedImportMap.set(
+      'src/consumer.ts',
+      new Map([['fetchUser', { sourcePath: 'src/api.ts', exportedName: 'getUser' }]]),
+    );
+
+    const acc = new BindingAccumulator();
+    acc.appendFile('src/api.ts', [{ scope: '', varName: 'getUser', typeName: 'User' }]);
+
+    const constructorBindings: FileConstructorBindings[] = [
+      {
+        filePath: 'src/consumer.ts',
+        // calleeName is the LOCAL alias used at the call site
+        bindings: [{ scope: 'main@0', varName: 'x', calleeName: 'fetchUser' }],
+      },
+    ];
+
+    const calls: ExtractedCall[] = [
+      {
+        filePath: 'src/consumer.ts',
+        calledName: 'save',
+        sourceId: 'Function:src/consumer.ts:main',
+        receiverName: 'x',
+        callForm: 'member',
+      },
+    ];
+
+    await processCallsFromExtracted(
+      graph,
+      calls,
+      ctx,
+      undefined,
+      constructorBindings,
+      undefined,
+      acc,
+    );
 
     const rels = graph.relationships.filter((r) => r.type === 'CALLS');
     expect(rels).toHaveLength(1);
