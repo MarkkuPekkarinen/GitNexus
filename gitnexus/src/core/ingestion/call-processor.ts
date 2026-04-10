@@ -1649,7 +1649,7 @@ const resolveCallTarget = (
     ) : null) ?? resolveMemberCallByFile(
       call.calledName, call.receiverTypeName, currentFile, ctx,
       call.argCount, call.callForm, overloadHints, preComputedArgTypes,
-    );
+    ) ?? singleCandidate(tiered, call.argCount, call.callForm);
   }
   return resolveModuleAliasedCall(call, currentFile, ctx, widenCache)
     ?? singleCandidate(tiered, call.argCount, call.callForm);
