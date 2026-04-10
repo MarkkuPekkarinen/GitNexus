@@ -386,10 +386,22 @@ export const fetchRepos = async (): Promise<BackendRepo[]> => {
   return response.json() as Promise<BackendRepo[]>;
 };
 
-/** Fetch repo metadata. */
-export const fetchRepoInfo = async (repo?: string): Promise<BackendRepo> => {
+/** Fetch repo metadata.
+ * Pass `awaitAnalysis: true` when connecting to a repo that may still be cloning/analyzing —
+ * this enables the backend's hold-queue and uses a 5-minute timeout to match.
+ * Normal calls (e.g. repo switching between already-indexed repos) use the default 10s timeout.
+ *
+ * Must stay in sync with HOLD_QUEUE_TIMEOUT_SECS in gitnexus/src/server/api.ts.
+ */
+const HOLD_QUEUE_TIMEOUT_MS = 300_000; // 5 minutes — matches backend HOLD_QUEUE_TIMEOUT_SECS
+
+export const fetchRepoInfo = async (
+  repo?: string,
+  opts?: { awaitAnalysis?: boolean },
+): Promise<BackendRepo> => {
   const url = `${_backendUrl}/api/repo${repo ? `?${repoParam(repo)}` : ''}`;
-  const response = await fetchWithTimeout(url);
+  const timeout = opts?.awaitAnalysis ? HOLD_QUEUE_TIMEOUT_MS : undefined;
+  const response = await fetchWithTimeout(url, {}, timeout);
   await assertOk(response);
   const data = await response.json();
   return { ...data, repoPath: data.repoPath ?? data.path };
@@ -736,18 +748,21 @@ export interface ConnectResult {
 /**
  * Connect to a server: validate, fetch repo info, download graph.
  * Content is NOT included (use readFile/grep for file access).
+ * Pass `awaitAnalysis: true` when the repo may still be cloning/analyzing —
+ * this enables the backend hold-queue and a 5-minute fetch timeout.
  */
 export async function connectToServer(
   url: string,
   onProgress?: (phase: string, downloaded: number, total: number | null) => void,
   signal?: AbortSignal,
   repoName?: string,
+  opts?: { awaitAnalysis?: boolean },
 ): Promise<ConnectResult> {
   const baseUrl = normalizeServerUrl(url);
   setBackendUrl(baseUrl);
 
   onProgress?.('validating', 0, null);
-  const repoInfo = await fetchRepoInfo(repoName);
+  const repoInfo = await fetchRepoInfo(repoName, { awaitAnalysis: opts?.awaitAnalysis });
 
   onProgress?.('downloading', 0, null);
   const { nodes, relationships } = await fetchGraph(repoName, {
