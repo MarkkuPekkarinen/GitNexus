@@ -1303,6 +1303,9 @@ export const processCalls = async (
 
 const CONSTRUCTOR_TARGET_TYPES = new Set(['Constructor', 'Class', 'Struct', 'Record']);
 
+/** Per-file cache for module-alias widening. Cleared between files. */
+type WidenCache = Map<string, readonly SymbolDefinition[]>;
+
 const filterCallableCandidates = (
   candidates: readonly SymbolDefinition[],
   argCount?: number,
@@ -1337,6 +1340,40 @@ const filterCallableCandidates = (
       (argCount >= (candidate.requiredParameterCount ?? candidate.parameterCount) &&
         argCount <= candidate.parameterCount),
   );
+};
+
+/**
+ * Count callable candidates matching the kind + arity filter without
+ * allocating an intermediate array. Short-circuits once count exceeds
+ * `threshold` (default 1) — used by the dispatcher's `skipMember` check
+ * where we only need to know "more than one survivor".
+ */
+const countCallableCandidates = (
+  candidates: readonly SymbolDefinition[],
+  argCount?: number,
+  callForm?: 'free' | 'member' | 'constructor',
+  threshold = 1,
+): number => {
+  let count = 0;
+  for (const c of candidates) {
+    // Kind filter (mirrors filterCallableCandidates)
+    const typeOk =
+      callForm === 'constructor'
+        ? CONSTRUCTOR_TARGET_TYPES.has(c.type)
+        : CALLABLE_TYPES.has(c.type);
+    if (!typeOk) continue;
+    // Arity filter
+    if (
+      argCount !== undefined &&
+      c.parameterCount !== undefined &&
+      (argCount < (c.requiredParameterCount ?? c.parameterCount) || argCount > c.parameterCount)
+    ) {
+      continue;
+    }
+    count++;
+    if (count > threshold) return count; // early exit
+  }
+  return count;
 };
 
 const toResolveResult = (definition: SymbolDefinition, tier: ResolutionTier): ResolveResult => ({
@@ -1476,9 +1513,6 @@ const dedupSwiftExtensionCandidates = (
  *
  * Replaces the former 200+ line function (SM-19: fuzzy-free call resolution).
  */
-/** Per-file cache for module-alias widening. Cleared between files. */
-type WidenCache = Map<string, readonly SymbolDefinition[]>;
-
 /**
  * Module-alias resolution for member calls without a receiver type.
  *
@@ -1491,6 +1525,7 @@ const resolveModuleAliasedCall = (
   currentFile: string,
   ctx: ResolutionContext,
   widenCache?: WidenCache,
+  tieredOverride?: TieredCandidates,
 ): ResolveResult | null => {
   if (!call.receiverName) return null;
   const aliasMap = ctx.moduleAliasMap?.get(currentFile);
@@ -1498,15 +1533,19 @@ const resolveModuleAliasedCall = (
   const moduleFile = aliasMap.get(call.receiverName);
   if (!moduleFile) return null;
 
-  const tiered = ctx.resolve(call.calledName, currentFile);
+  // Reuse the caller's pre-computed tiered result when available —
+  // the dispatcher already called ctx.resolve(call.calledName, currentFile).
+  const tiered = tieredOverride ?? ctx.resolve(call.calledName, currentFile);
   if (!tiered) return null;
 
   // Try member-form, then constructor-form (for `module.ClassName()` patterns)
-  let filtered = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm)
-    .filter((c) => c.filePath === moduleFile);
+  let filtered = filterCallableCandidates(tiered.candidates, call.argCount, call.callForm).filter(
+    (c) => c.filePath === moduleFile,
+  );
   if (filtered.length === 0) {
-    filtered = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor')
-      .filter((c) => c.filePath === moduleFile);
+    filtered = filterCallableCandidates(tiered.candidates, call.argCount, 'constructor').filter(
+      (c) => c.filePath === moduleFile,
+    );
   }
   if (filtered.length === 0) {
     // Widen to global callable index scoped to the aliased module file.
@@ -1516,11 +1555,13 @@ const resolveModuleAliasedCall = (
       defs = ctx.symbols.lookupCallableByName(call.calledName);
       widenCache?.set(cacheKey, defs);
     }
-    filtered = filterCallableCandidates(defs, call.argCount, call.callForm)
-      .filter((c) => c.filePath === moduleFile);
+    filtered = filterCallableCandidates(defs, call.argCount, call.callForm).filter(
+      (c) => c.filePath === moduleFile,
+    );
     if (filtered.length === 0) {
-      filtered = filterCallableCandidates(defs, call.argCount, 'constructor')
-        .filter((c) => c.filePath === moduleFile);
+      filtered = filterCallableCandidates(defs, call.argCount, 'constructor').filter(
+        (c) => c.filePath === moduleFile,
+      );
     }
   }
   return filtered.length === 1 ? toResolveResult(filtered[0], tiered.tier) : null;
@@ -1553,7 +1594,9 @@ const resolveMemberCallByFile = (
   const typeFiles = new Set(typeResolved.candidates.map((d) => d.filePath));
 
   const methodPool = filterCallableCandidates(
-    ctx.symbols.lookupCallableByName(calledName), argCount, callForm,
+    ctx.symbols.lookupCallableByName(calledName),
+    argCount,
+    callForm,
   );
   const fileFiltered = methodPool.filter((c) => typeFiles.has(c.filePath));
   if (fileFiltered.length === 1) {
@@ -1577,7 +1620,8 @@ const resolveMemberCallByFile = (
   }
 
   // Zero-match null-route: receiver type resolved but no candidate matched
-  if (fileFiltered.length === 0 && ownerFiltered.length === 0) return null;
+  // after file-based and owner-based narrowing. Refuse to emit a CALLS edge
+  // rather than guess — matches the SM-10 R3 null-route contract.
   return null;
 };
 
@@ -1633,26 +1677,75 @@ const resolveCallTarget = (
 
   if (call.callForm === 'free') {
     return resolveFreeCall(
-      call.calledName, currentFile, ctx, call.argCount,
-      tiered, overloadHints, preComputedArgTypes,
+      call.calledName,
+      currentFile,
+      ctx,
+      call.argCount,
+      tiered,
+      overloadHints,
+      preComputedArgTypes,
     );
   }
   if (call.callForm === 'constructor') {
-    return resolveStaticCall(call.calledName, currentFile, ctx, call.argCount, tiered)
-      ?? singleCandidate(tiered, call.argCount, 'constructor');
+    return (
+      resolveStaticCall(call.calledName, currentFile, ctx, call.argCount, tiered) ??
+      singleCandidate(tiered, call.argCount, 'constructor')
+    );
   }
   if (call.receiverTypeName) {
-    const skipMember = (!!overloadHints || !!preComputedArgTypes) &&
-      filterCallableCandidates(tiered.candidates, call.argCount, call.callForm).length > 1;
-    return (!skipMember ? resolveMemberCall(
-      call.receiverTypeName, call.calledName, currentFile, ctx, heritageMap, call.argCount,
-    ) : null) ?? resolveMemberCallByFile(
-      call.calledName, call.receiverTypeName, currentFile, ctx,
-      call.argCount, call.callForm, overloadHints, preComputedArgTypes,
-    ) ?? singleCandidate(tiered, call.argCount, call.callForm);
+    // Skip the owner-scoped MRO path when the tiered pool has genuine
+    // overload ambiguity that needs D1-D4+E handling, not D0.
+    const skipMember =
+      (!!overloadHints || !!preComputedArgTypes) &&
+      countCallableCandidates(tiered.candidates, call.argCount, call.callForm) > 1;
+    // Try owner-scoped (resolveMemberCall) then file-scoped (resolveMemberCallByFile).
+    const memberResult =
+      (!skipMember
+        ? resolveMemberCall(
+            call.receiverTypeName,
+            call.calledName,
+            currentFile,
+            ctx,
+            heritageMap,
+            call.argCount,
+          )
+        : null) ??
+      resolveMemberCallByFile(
+        call.calledName,
+        call.receiverTypeName,
+        currentFile,
+        ctx,
+        call.argCount,
+        call.callForm,
+        overloadHints,
+        preComputedArgTypes,
+      );
+    if (memberResult) return memberResult;
+
+    // singleCandidate tail fallback — but only when the receiver type
+    // did NOT resolve to any indexed type. This reproduces the old
+    // resolveCallTarget's D1-D4 null-route guard (SM-10 R3): when the
+    // type IS in the index but file/owner filtering produced zero
+    // matches, that's a genuine miss and we must null-route rather than
+    // fall through to an unscoped singleCandidate that ignores the
+    // receiver's class hierarchy.
+    //
+    // When the type is NOT in the index (e.g. PHP 'mixed', dynamic
+    // types, unresolvable aliases), the scoped resolvers had nothing to
+    // work with and singleCandidate is the correct last resort — it
+    // picks the globally-unique candidate if one exists.
+    //
+    // ctx.resolve is cached per (name, file) pair, so this call is free.
+    const typeResolves = ctx.resolve(call.receiverTypeName, currentFile);
+    if (typeResolves && typeResolves.candidates.length > 0) {
+      return null; // null-route: type resolved, no candidate matched
+    }
+    return singleCandidate(tiered, call.argCount, call.callForm);
   }
-  return resolveModuleAliasedCall(call, currentFile, ctx, widenCache)
-    ?? singleCandidate(tiered, call.argCount, call.callForm);
+  return (
+    resolveModuleAliasedCall(call, currentFile, ctx, widenCache, tiered) ??
+    singleCandidate(tiered, call.argCount, call.callForm)
+  );
 };
 
 // ── Scope key helpers ────────────────────────────────────────────────────
