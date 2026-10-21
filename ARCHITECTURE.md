@@ -212,6 +212,27 @@ They follow explicit ESM/CommonJS imports and exports through the configured
 `router` is not evidence; type-only imports, shadowed bindings, conflicting writes,
 and unproven factories do not establish a receiver. Directly proven Hono verb
 registrations remain supported, without applying Express mounting semantics.
+A registration whose receiver, literal path or mounted router is a parameter of a
+named function (`mountSSEProgress(app, '/p', jobs)` → `app.get(routePath, …)`)
+resolves through each call site of that function, once per site and in the
+helper's file. This is one hop only: a site argument that is itself a parameter,
+an unproven argument, or a reassigned parameter establishes nothing, and a helper
+with no recorded call site is read as written, so an unknown mount path still
+suppresses its router's standalone paths.
+
+Fetch-wrapper facts use the same lexical identities. The shared resolver in
+`route-extractors/fetch-wrapper-index.ts` names no language, but it applies
+ECMAScript `ResolveExport` rules to the re-export facts it receives: only
+providers whose modules link that way implement the re-export hook. A file that
+passes a route's URL to a callee not proven to be a wrapper is counted on the
+Route as `unverifiedConsumers` (proven consumers and the route's own file
+excluded), and `api_impact` then reports its consumer count as a lower bound.
+
+An inline Express handler resolves to the anonymous Function node the capture
+layer names by position, so its Route carries a `handlerSymbolId`. In a file
+with several routes, response keys come from that handler's lines rather than
+the whole file (middleware stays file-level), and flows link only where they
+start at that handler.
 
 A standalone router retains its local paths. A known dynamic mount suppresses
 that fallback, while independently proven static mounts remain available. Cycles
@@ -368,6 +389,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `fieldFallbackOnMethodLookup?`                          | Statically-typed languages turn this OFF — the heuristic over-connects (default on)                                                                                                                                                                             |
 | `elementTypeOf?`                                        | `(containerType, via: {kind:'index'} \| {kind:'accessor',name}) → elementType \| undefined` — element type of a container, reached by subscript (`repos[0]`) or by a property-style collection view (`data.Values`). ONE hook for both routes (it replaced the split `unwrapCollectionAccessor` / `unwrapCollectionElement`, where implementing one silently answered nothing for the other). Consulted only where the source actually performed the access — never as a general type-name normalizer |
 | `stripTypePreservingDecoration?`                        | `(typeName) → strippedName \| undefined` — strip ONE layer of TYPE-PRESERVING decoration (pointer, reference, `const`, nullable, borrow, sigil) so a receiver declared `*Host` still finds the `Host` binding (#2766). Never a container: unwrapping `Repo[]` here would fold `repos.find(x)` to `Repo.find` — that is `elementTypeOf`'s job, and only after a real subscript. Consulted only after every undecorated lookup fails, and only by receiver-chain base/step resolution — default off |
+| `qualifiedTypeLookupSpelling?`                          | `(typeRef) → 'pkg.Type' \| undefined` — the namespace-qualified spelling of a declared type whose qualifier capture cut from `rawName` (`*models.User` stored as `User`), recovered from `declaredSpelling`. Receiver typing tries it first, grounded on the qualifier's import (no unique-name guess), and falls back to the bare `rawName` lookup on any miss, so two packages' same-named types stop colliding. The binding is not rewritten — default off |
 | `collapseMemberCallsByCallerTarget?`                    | One CALLS edge per (caller, target) instead of per-site — default off                                                                                                                                                                                           |
 | `populateNamespaceSiblings?`                            | Cross-file implicit visibility (compiler-implicit namespace sharing) — default off; ctx carries `treeCache`                                                                                                                                                     |
 | `hoistTypeBindingsToModule?`                            | Walk up to Module scope when looking up a method's return-type typeBinding — default off; enable only when bindings are stored at module level                                                                                                                  |
